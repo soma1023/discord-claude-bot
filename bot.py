@@ -1,6 +1,7 @@
 import discord
 import subprocess
 import os
+import sys
 import asyncio
 import base64
 import aiohttp
@@ -454,13 +455,35 @@ async def on_message(message):
         await message.reply(
             "**コマンド一覧**\n"
             "`!reset` — 自分の会話履歴をリセット\n"
+            "`!update` — Botを最新版に更新して再起動\n"
             "`!help` — このメッセージを表示\n\n"
             "**できること**\n"
-            "- ファイル読み書き\n"
+            "- ファイル読み書き・削除（ゴミ箱）\n"
             "- シェルコマンド実行\n"
+            "- Excel操作\n"
             "- コード作成・修正\n"
             "- 画像解析（スクショ送付）"
         )
+        return
+
+    if content == "!update":
+        await message.reply("🔄 最新版を取得して再起動します...")
+        try:
+            url = "https://raw.githubusercontent.com/soma1023/discord-claude-bot/master/bot.py"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        await message.reply(f"取得失敗: HTTP {resp.status}")
+                        return
+                    new_code = await resp.text()
+            script_path = os.path.abspath(__file__)
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(new_code)
+            await message.reply("✅ 更新完了。再起動します。")
+            subprocess.Popen([sys.executable, script_path])
+            await client.close()
+        except Exception as e:
+            await message.reply(f"更新エラー: {e}")
         return
 
     has_images = any(
