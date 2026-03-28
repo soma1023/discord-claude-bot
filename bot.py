@@ -8,6 +8,8 @@ import aiohttp
 import anthropic
 import openpyxl
 import send2trash
+import json
+from datetime import datetime
 from dotenv import load_dotenv
 
 # ローカル .env（相手ユーザーのPC用）を優先して読み込む
@@ -27,6 +29,8 @@ ALLOWED_USER_IDS = {
 }
 WORK_DIR = os.path.expanduser('~')
 MAX_HISTORY = 20  # 1ユーザーあたりの最大メッセージ数（往復10回）
+LOG_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'usage.jsonl')
+os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 SYSTEM_PROMPT = """あなたはClaudeです。ユーザーのDiscordから指示を受け、PCを操作するAIアシスタントです。
 ファイルの読み書き、コード実行、コマンド実行など、Claude Codeと同等の作業ができます。
@@ -180,6 +184,16 @@ ai = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 history: dict[int, list] = {}
 
 
+def log_event(entry: dict):
+    """操作ログをJSONL形式で追記する"""
+    try:
+        entry["ts"] = datetime.now().isoformat(timespec='seconds')
+        with open(LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+
 def get_history(user_id: int) -> list:
     return history.setdefault(user_id, [])
 
@@ -192,29 +206,30 @@ def add_to_history(user_id: int, role: str, content: str):
         h.pop(0)
 
 
-def execute_tool(name: str, inp: dict) -> str:
+def execute_tool(name: str, inp: dict, user_id: int = 0) -> str:
+    out = None
+    success = True
     try:
         if name == "bash":
-            result = subprocess.run(
+            proc = subprocess.run(
                 inp["command"], shell=True, capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=60, cwd=WORK_DIR
             )
-            out = (result.stdout + result.stderr).strip()
-            return out[:8000] if out else "（出力なし）"
+            raw = (proc.stdout + proc.stderr).strip()
+            out = raw[:8000] if raw else "（出力なし）"
 
         elif name == "read_file":
             path = os.path.expanduser(inp["path"])
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            return content[:8000]
+                out = f.read()[:8000]
 
         elif name == "write_file":
             path = os.path.expanduser(inp["path"])
             os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(inp["content"])
-            return f"書き込み完了: {path}"
+            out = f"書き込み完了: {path}"
 
         elif name == "list_files":
             path = os.path.expanduser(inp.get("path", WORK_DIR))
@@ -224,21 +239,21 @@ def execute_tool(name: str, inp: dict) -> str:
                 full = os.path.join(path, e)
                 tag = "/" if os.path.isdir(full) else ""
                 lines.append(f"{e}{tag}")
-            return "\n".join(lines) or "（空）"
+            out = "\n".join(lines) or "（空）"
 
         elif name == "search_files":
-            result = subprocess.run(
+            proc = subprocess.run(
                 ["grep", "-r", "-n", inp["pattern"], os.path.expanduser(inp["path"])],
                 capture_output=True, text=True, encoding='utf-8',
                 errors='replace', timeout=30
             )
-            out = result.stdout.strip()
-            return out[:8000] if out else "マッチなし"
+            raw = proc.stdout.strip()
+            out = raw[:8000] if raw else "マッチなし"
 
         elif name == "trash":
             path = os.path.expanduser(inp["path"])
             send2trash.send2trash(path)
-            return f"ゴミ箱に移動しました: {path}"
+            out = f"ゴミ箱に移動しました: {path}"
 
         elif name == "excel_read":
             path = os.path.expanduser(inp["path"])
@@ -247,10 +262,8 @@ def execute_tool(name: str, inp: dict) -> str:
             if inp.get("range"):
                 cells = ws[inp["range"]]
                 if not isinstance(cells, (tuple, list)):
-                    # 単一セル（例: "A1"）
                     rows = [[cells.value]]
                 elif cells and not isinstance(cells[0], (tuple, list)):
-                    # 単一行（例: "A1:C1"が1行の場合）
                     rows = [[c.value for c in cells]]
                 else:
                     rows = [[c.value for c in row] for row in cells]
@@ -259,34 +272,40 @@ def execute_tool(name: str, inp: dict) -> str:
             lines = []
             for row in rows:
                 lines.append("\t".join("" if v is None else str(v) for v in row))
-            return "\n".join(lines)[:8000] or "（データなし）"
+            out = "\n".join(lines)[:8000] or "（データなし）"
 
         elif name == "excel_write":
             path = os.path.expanduser(inp["path"])
-            if os.path.exists(path):
-                wb = openpyxl.load_workbook(path)
-            else:
-                wb = openpyxl.Workbook()
+            wb = openpyxl.load_workbook(path) if os.path.exists(path) else openpyxl.Workbook()
             ws = wb[inp["sheet"]] if inp.get("sheet") and inp["sheet"] in wb.sheetnames else wb.active
             ws[inp["cell"]] = inp["value"]
             wb.save(path)
-            return f"{inp['cell']} に '{inp['value']}' を書き込みました: {path}"
+            out = f"{inp['cell']} に '{inp['value']}' を書き込みました: {path}"
 
         elif name == "excel_append":
             path = os.path.expanduser(inp["path"])
-            if os.path.exists(path):
-                wb = openpyxl.load_workbook(path)
-            else:
-                wb = openpyxl.Workbook()
+            wb = openpyxl.load_workbook(path) if os.path.exists(path) else openpyxl.Workbook()
             ws = wb[inp["sheet"]] if inp.get("sheet") and inp["sheet"] in wb.sheetnames else wb.active
             ws.append(inp["values"])
             wb.save(path)
-            return f"行を追加しました（{len(inp['values'])}列）: {path}"
+            out = f"行を追加しました（{len(inp['values'])}列）: {path}"
 
     except subprocess.TimeoutExpired:
-        return "タイムアウト（60秒）"
+        out = "タイムアウト（60秒）"
+        success = False
     except Exception as e:
-        return f"エラー: {e}"
+        out = f"エラー: {e}"
+        success = False
+
+    log_event({
+        "event": "tool_use",
+        "user_id": user_id,
+        "tool": name,
+        "input": inp,
+        "result_preview": (out or "")[:300],
+        "success": success
+    })
+    return out
 
 
 async def update_status_from_headers(headers):
@@ -337,6 +356,13 @@ async def run_agent(user_id: int, user_content, channel) -> str:
             user_text = user_content if isinstance(user_content, str) else "[画像+テキスト]"
             add_to_history(user_id, "user", user_text)
             add_to_history(user_id, "assistant", final)
+            log_event({
+                "event": "message",
+                "user_id": user_id,
+                "user_text": user_text[:300],
+                "response_preview": final[:300],
+                "tool_count": tool_count
+            })
             return final
 
         # ツール実行
@@ -360,8 +386,12 @@ async def run_agent(user_id: int, user_content, channel) -> str:
                         file=discord.File(path)
                     )
                     result_content = f"ファイルを送信しました: {path}"
+                    log_event({"event": "tool_use", "user_id": user_id, "tool": "send_file",
+                               "input": block.input, "result_preview": result_content, "success": True})
                 except Exception as e:
                     result_content = f"送信エラー: {e}"
+                    log_event({"event": "tool_use", "user_id": user_id, "tool": "send_file",
+                               "input": block.input, "result_preview": result_content, "success": False})
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -389,8 +419,12 @@ async def run_agent(user_id: int, user_content, channel) -> str:
                             }
                         }
                     ]
+                    log_event({"event": "tool_use", "user_id": user_id, "tool": "read_image",
+                               "input": block.input, "result_preview": f"画像読み込み成功: {path}", "success": True})
                 except Exception as e:
                     result_content = f"画像読み込みエラー: {e}"
+                    log_event({"event": "tool_use", "user_id": user_id, "tool": "read_image",
+                               "input": block.input, "result_preview": result_content, "success": False})
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -400,7 +434,7 @@ async def run_agent(user_id: int, user_content, channel) -> str:
             # その他のツール
             else:
                 result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda b=block: execute_tool(b.name, b.input)
+                    None, lambda b=block: execute_tool(b.name, b.input, user_id)
                 )
                 tool_results.append({
                     "type": "tool_result",
@@ -456,6 +490,7 @@ async def on_message(message):
             "**コマンド一覧**\n"
             "`!reset` — 自分の会話履歴をリセット\n"
             "`!update` — Botを最新版に更新して再起動\n"
+            "`!log [件数]` — 最近の操作ログを表示（デフォルト10件）\n"
             "`!help` — このメッセージを表示\n\n"
             "**できること**\n"
             "- ファイル読み書き・削除（ゴミ箱）\n"
@@ -464,6 +499,32 @@ async def on_message(message):
             "- コード作成・修正\n"
             "- 画像解析（スクショ送付）"
         )
+        return
+
+    if content.startswith("!log"):
+        try:
+            parts = content.split()
+            n = int(parts[1]) if len(parts) > 1 else 10
+            n = min(n, 50)
+            if not os.path.exists(LOG_PATH):
+                await message.reply("ログファイルがまだありません。")
+                return
+            with open(LOG_PATH, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            recent = lines[-n:]
+            entries = [json.loads(l) for l in recent]
+            msg = f"**最新{len(entries)}件のログ**\n"
+            for e in entries:
+                ts = e.get("ts", "")
+                if e["event"] == "tool_use":
+                    status = "✅" if e.get("success") else "❌"
+                    inp_str = str(e.get("input", ""))[:60]
+                    msg += f"`{ts}` {status} **{e['tool']}** `{inp_str}`\n"
+                else:
+                    msg += f"`{ts}` 💬 {e.get('user_text', '')[:60]}\n"
+            await message.reply(msg[:1900])
+        except Exception as e:
+            await message.reply(f"ログ取得エラー: {e}")
         return
 
     if content == "!update":
