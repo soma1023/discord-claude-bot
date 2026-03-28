@@ -533,17 +533,16 @@ async def on_message(message):
     if content_lower == "!update":
         await message.reply("🔄 最新版を取得して再起動します...")
         try:
-            url = "https://raw.githubusercontent.com/soma1023/discord-claude-bot/master/bot.py"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        await message.reply(f"取得失敗: HTTP {resp.status}")
-                        return
-                    new_code = await resp.text()
             script_path = os.path.abspath(__file__)
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write(new_code)
-            await message.reply("✅ 更新完了。再起動します。")
+            repo_dir = os.path.dirname(script_path)
+            result = subprocess.run(
+                ["git", "pull"], cwd=repo_dir,
+                capture_output=True, text=True, encoding='utf-8', errors='replace'
+            )
+            if result.returncode != 0:
+                await message.reply(f"git pull 失敗:\n```{result.stderr[:500]}```")
+                return
+            await message.reply(f"✅ 更新完了。再起動します。\n```{result.stdout.strip()[:300]}```")
             # 自分以外の同名プロセスをすべて終了
             current_pid = os.getpid()
             subprocess.run(
