@@ -478,15 +478,16 @@ async def on_message(message):
         return
 
     content = message.content.strip()
+    content_lower = content.lower()
     user_id = message.author.id
 
     # コマンド処理
-    if content == "!reset":
+    if content_lower == "!reset":
         history[user_id] = []
         await message.reply("🗑️ 会話履歴をリセットしました。")
         return
 
-    if content == "!help":
+    if content_lower == "!help":
         await message.reply(
             "**コマンド一覧**\n"
             "`!reset` — 自分の会話履歴をリセット\n"
@@ -502,7 +503,7 @@ async def on_message(message):
         )
         return
 
-    if content.startswith("!log"):
+    if content_lower.startswith("!log"):
         try:
             parts = content.split()
             n = int(parts[1]) if len(parts) > 1 else 10
@@ -529,7 +530,7 @@ async def on_message(message):
             await message.reply(f"ログ取得エラー: {e}")
         return
 
-    if content == "!update":
+    if content_lower == "!update":
         await message.reply("🔄 最新版を取得して再起動します...")
         try:
             url = "https://raw.githubusercontent.com/soma1023/discord-claude-bot/master/bot.py"
