@@ -374,7 +374,6 @@ async def run_agent(user_id: int, user_content, channel) -> str:
                 continue
 
             tool_count += 1
-            await channel.send(f"🔧 `{block.name}` 実行中... ({tool_count}回目)")
 
             # send_file: 非同期でDiscordにファイルを送信
             if block.name == "send_file":
