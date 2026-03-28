@@ -544,6 +544,13 @@ async def on_message(message):
             with open(script_path, 'w', encoding='utf-8') as f:
                 f.write(new_code)
             await message.reply("✅ 更新完了。再起動します。")
+            # 自分以外の同名プロセスをすべて終了
+            current_pid = os.getpid()
+            subprocess.run(
+                f'wmic process where "name=\'python.exe\' and processid!={current_pid}" '
+                f'call terminate',
+                shell=True, capture_output=True
+            )
             subprocess.Popen([sys.executable, script_path])
             await client.close()
         except Exception as e:
