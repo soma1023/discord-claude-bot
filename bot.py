@@ -361,7 +361,9 @@ async def run_agent(user_id: int, user_content, channel) -> str:
                 "user_id": user_id,
                 "user_text": user_text[:300],
                 "response_preview": final[:300],
-                "tool_count": tool_count
+                "tool_count": tool_count,
+                "input_tokens": getattr(response.usage, "input_tokens", None),
+                "output_tokens": getattr(response.usage, "output_tokens", None)
             })
             return final
 
@@ -520,7 +522,8 @@ async def on_message(message):
                     inp_str = str(e.get("input", ""))[:60]
                     msg += f"`{ts}` {status} **{e['tool']}** `{inp_str}`\n"
                 else:
-                    msg += f"`{ts}` 💬 {e.get('user_text', '')[:60]}\n"
+                    tok = f" in:{e.get('input_tokens')} out:{e.get('output_tokens')}" if e.get('input_tokens') else ""
+                    msg += f"`{ts}` 💬 {e.get('user_text', '')[:60]}{tok}\n"
             await message.reply(msg[:1900])
         except Exception as e:
             await message.reply(f"ログ取得エラー: {e}")
