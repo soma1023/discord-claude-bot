@@ -535,14 +535,28 @@ async def on_message(message):
         try:
             script_path = os.path.abspath(__file__)
             repo_dir = os.path.dirname(script_path)
-            result = subprocess.run(
-                ["git", "pull"], cwd=repo_dir,
-                capture_output=True, text=True, encoding='utf-8', errors='replace'
-            )
-            if result.returncode != 0:
-                await message.reply(f"git pull 失敗:\n```{result.stderr[:500]}```")
-                return
-            await message.reply(f"✅ 更新完了。再起動します。\n```{result.stdout.strip()[:300]}```")
+            # .gitがあればgit pull、なければraw URLからダウンロード
+            if os.path.isdir(os.path.join(repo_dir, '.git')):
+                result = subprocess.run(
+                    ["git", "pull"], cwd=repo_dir,
+                    capture_output=True, text=True, encoding='utf-8', errors='replace'
+                )
+                if result.returncode != 0:
+                    await message.reply(f"git pull 失敗:\n```{result.stderr[:500]}```")
+                    return
+                detail = result.stdout.strip()[:300]
+            else:
+                url = "https://raw.githubusercontent.com/soma1023/discord-claude-bot/master/bot.py"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            await message.reply(f"取得失敗: HTTP {resp.status}")
+                            return
+                        new_code = await resp.text()
+                with open(script_path, 'w', encoding='utf-8') as f:
+                    f.write(new_code)
+                detail = "raw URLから取得"
+            await message.reply(f"✅ 更新完了。再起動します。\n```{detail}```")
             # 自分以外の同名プロセスをすべて終了
             current_pid = os.getpid()
             subprocess.run(
