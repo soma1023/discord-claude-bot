@@ -9,6 +9,7 @@ import anthropic
 import openpyxl
 import send2trash
 import json
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -333,16 +334,26 @@ async def run_agent(user_id: int, user_content, channel) -> str:
 
     tool_count = 0
     while True:
-        raw = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda msgs=messages: ai.messages.with_raw_response.create(
-                model="claude-opus-4-6",
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=msgs
-            )
-        )
+        # 429レート制限時に指数バックオフでリトライ（最大3回）
+        for attempt in range(4):
+            try:
+                raw = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda msgs=messages: ai.messages.with_raw_response.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=4096,
+                        system=SYSTEM_PROMPT,
+                        tools=TOOLS,
+                        messages=msgs
+                    )
+                )
+                break
+            except anthropic.RateLimitError:
+                if attempt == 3:
+                    raise
+                wait = 2 ** attempt * 5  # 5秒, 10秒, 20秒
+                await channel.send(f"⏳ レート制限中。{wait}秒後にリトライします... ({attempt + 1}/3)")
+                await asyncio.sleep(wait)
         response = raw.parse()
         await update_status_from_headers(raw.headers)
 
