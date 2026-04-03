@@ -38,6 +38,18 @@ SYSTEM_PROMPT = """あなたはClaudeです。ユーザーのDiscordから指示
 作業内容は日本語で簡潔に報告してください。
 OSはWindows 11です。コマンドはbashまたはPowerShell構文で実行できます。"""
 
+OLLAMA_URL = "http://localhost:11434/api/chat"
+OLLAMA_MODEL = "gemma4"
+
+# Claudeが必要と判断するキーワード
+CLAUDE_KEYWORDS = [
+    'ファイル', 'フォルダ', 'ディレクトリ', 'コマンド', '実行', '起動', '終了',
+    'bash', 'python', 'powershell', 'excel', 'スクリーンショット',
+    'ダウンロード', 'インストール', 'プロセス', 'git', 'タスク',
+    'スケジュール', 'コード', 'プログラム', 'スクリプト', 'ログ',
+    'エラー', 'デバッグ', 'パス', '検索', '削除', 'コピー', '移動',
+]
+
 TOOLS = [
     {
         "name": "bash",
@@ -180,6 +192,31 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 ai = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def needs_claude(content: str) -> bool:
+    """ツール使用が必要そうかを判定する"""
+    content_lower = content.lower()
+    return any(kw in content_lower for kw in CLAUDE_KEYWORDS)
+
+
+async def ask_gemma(messages: list) -> str | None:
+    """Gemma 4（Ollama）に問い合わせる。失敗時はNoneを返す"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "model": OLLAMA_MODEL,
+                "stream": False,
+                "messages": messages
+            }
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with session.post(OLLAMA_URL, json=payload, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["message"]["content"]
+    except Exception:
+        pass
+    return None
 
 # ユーザーごとの会話履歴 { user_id: [{role, content}, ...] }
 history: dict[int, list] = {}
@@ -592,6 +629,7 @@ async def on_message(message):
     async with message.channel.typing():
         try:
             if has_images:
+                # 画像はClaude必須
                 user_content = []
                 async with aiohttp.ClientSession() as session:
                     for att in message.attachments:
@@ -610,10 +648,29 @@ async def on_message(message):
                     "type": "text",
                     "text": content if content else "この画像について説明してください。"
                 })
-            else:
-                user_content = content
+                response = await run_agent(user_id, user_content, message.channel)
 
-            response = await run_agent(user_id, user_content, message.channel)
+            elif needs_claude(content):
+                # ツール使用が必要な場合はClaude
+                response = await run_agent(user_id, content, message.channel)
+
+            else:
+                # 雑談・質問はGemma 4で処理（無料）
+                gemma_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                for m in get_history(user_id):
+                    gemma_messages.append({"role": m["role"], "content": m["content"]})
+                gemma_messages.append({"role": "user", "content": content})
+
+                response = await ask_gemma(gemma_messages)
+                if response is not None:
+                    add_to_history(user_id, "user", content)
+                    add_to_history(user_id, "assistant", response)
+                    log_event({"event": "message", "user_id": user_id,
+                               "user_text": content[:300], "response_preview": response[:300],
+                               "model": "gemma4", "tool_count": 0})
+                else:
+                    # OllamaがダウンしていたらClaudeにフォールバック
+                    response = await run_agent(user_id, content, message.channel)
 
         except Exception as e:
             response = f"エラー: {e}"
