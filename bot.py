@@ -12,6 +12,7 @@ import json
 import time
 from datetime import datetime
 from dotenv import load_dotenv
+from discord.ext import tasks
 
 # ローカル .env（相手ユーザーのPC用）を優先して読み込む
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
@@ -30,6 +31,7 @@ ALLOWED_USER_IDS = {
 }
 WORK_DIR = os.path.expanduser('~')
 MAX_HISTORY = 20  # 1ユーザーあたりの最大メッセージ数（往復10回）
+PARTNER_USER_ID = 1256840314761773088
 LOG_PATH = os.path.join(os.path.dirname(__file__), 'logs', 'usage.jsonl')
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
@@ -509,10 +511,55 @@ async def send_long(message, response: str):
         await message.reply(response)
 
 
+@tasks.loop(minutes=30)
+async def check_for_updates():
+    """GitHubの新しいコミットをチェックして相手に通知する"""
+    try:
+        repo_dir = os.path.dirname(os.path.abspath(__file__))
+        if not os.path.isdir(os.path.join(repo_dir, '.git')):
+            return
+
+        subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, capture_output=True, timeout=30)
+
+        local = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'], cwd=repo_dir,
+            capture_output=True, text=True, encoding='utf-8'
+        ).stdout.strip()
+        remote = subprocess.run(
+            ['git', 'rev-parse', 'origin/master'], cwd=repo_dir,
+            capture_output=True, text=True, encoding='utf-8'
+        ).stdout.strip()
+
+        if local == remote:
+            return
+
+        log = subprocess.run(
+            ['git', 'log', '-1', '--pretty=%s', remote], cwd=repo_dir,
+            capture_output=True, text=True, encoding='utf-8'
+        ).stdout.strip()
+
+        user = await client.fetch_user(PARTNER_USER_ID)
+        dm = await user.create_dm()
+        await dm.send(
+            f"🔔 **Botのアップデートがあります！**\n\n"
+            f"📝 更新内容：{log}\n\n"
+            f"`!update` を送信してください。"
+        )
+        log_event({"event": "update_notify", "commit": remote[:7], "message": log})
+    except Exception as e:
+        print(f"update check error: {e}")
+
+
+@check_for_updates.before_loop
+async def before_check():
+    await client.wait_until_ready()
+
+
 @client.event
 async def on_ready():
     print(f"起動完了: {client.user}")
     await client.change_presence(status=discord.Status.online)
+    check_for_updates.start()
 
 
 @client.event
