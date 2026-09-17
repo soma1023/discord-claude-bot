@@ -7,6 +7,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 
+from . import audio as audio_mod
 from . import cache
 from .analyze import analyze
 from .sources import FetchError, fetch_chat, fetch_info, parse_url
@@ -16,11 +17,12 @@ MAX_LOADED = 4         # メモリに載せておく配信数（1件で数万〜
 
 
 class Job:
-    def __init__(self, job_id, url, params, refresh):
+    def __init__(self, job_id, url, params, refresh, with_audio=False):
         self.id = job_id
         self.url = url
         self.params = params
         self.refresh = refresh
+        self.with_audio = with_audio
         self.status = "pending"      # pending / running / done / error
         self.message = "待機中…"
         self.progress = 0.0
@@ -51,15 +53,21 @@ class JobManager:
 
     # -- チャット本体の保持 ------------------------------------------
 
-    def _remember(self, key, info, messages):
+    def _remember(self, key, info, messages, loudness=None):
         with self._lock:
-            self._loaded[key] = (info, messages)
+            previous = self._loaded.get(key)
+            if loudness is None and previous:
+                loudness = previous[2]        # 既に取ってある音量列は捨てない
+            self._loaded[key] = (info, messages, loudness)
             self._loaded.move_to_end(key)
             while len(self._loaded) > MAX_LOADED:
                 self._loaded.popitem(last=False)
 
     def get_chat(self, video_key):
-        """メモリ→ディスクキャッシュの順に探す。見つからなければ None。"""
+        """メモリ→ディスクキャッシュの順に探す。
+
+        戻り値は (StreamInfo, messages, loudness or None)。見つからなければ None。
+        """
         with self._lock:
             found = self._loaded.get(video_key)
             if found:
@@ -69,15 +77,20 @@ class JobManager:
             return None
         platform, video_id = video_key.split(":", 1)
         loaded = cache.load(platform, video_id)
-        if loaded:
-            self._remember(video_key, loaded[0], loaded[1])
-        return loaded
+        if not loaded:
+            return None
+        info, messages = loaded
+        loudness = cache.load_audio(platform, video_id)
+        self._remember(video_key, info, messages, loudness)
+        return info, messages, loudness
 
     # -- ジョブ ------------------------------------------------------
 
-    def submit(self, url, params, refresh=False):
+    def submit(self, url, params, refresh=False, with_audio=False):
         parse_url(url)   # 先にURLを検証して、おかしければここで弾く
-        job = Job(uuid.uuid4().hex[:12], url, params, refresh)
+        if with_audio:
+            audio_mod.find_ffmpeg()   # 落としてから足りないと分かるのを避ける
+        job = Job(uuid.uuid4().hex[:12], url, params, refresh, with_audio)
         with self._lock:
             self._jobs[job.id] = job
             while len(self._jobs) > MAX_JOBS:
@@ -96,29 +109,43 @@ class JobManager:
             key = "%s:%s" % (platform, video_id)
             job.video_key = key
 
-            loaded = None if job.refresh else self.get_chat(key)
-            if loaded:
-                info, messages = loaded
-                job.message = "保存済みのチャットを使用中…"
-                job.progress = 0.9
-            else:
-                def progress(message, frac):
+            # 音声まで取るときは、チャットは全体の前半分の進捗として扱う
+            chat_share = 0.45 if job.with_audio else 0.9
+
+            def stage_progress(low, high):
+                def report(message, frac):
                     job.message = message
                     if frac is not None:
-                        job.progress = max(job.progress, frac * 0.9)
+                        job.progress = max(job.progress, low + frac * (high - low))
+                return report
 
+            loaded = None if job.refresh else self.get_chat(key)
+            if loaded:
+                info, messages, loudness = loaded
+                job.message = "保存済みのチャットを使用中…"
+                job.progress = chat_share
+            else:
+                loudness = None
                 job.message = "配信情報を取得中…"
                 info = fetch_info(job.url)
                 job.progress = 0.05
-                messages = fetch_chat(info, progress=progress)
+                messages = fetch_chat(info, progress=stage_progress(0.05, chat_share))
                 if not messages:
                     raise FetchError("チャットが1件も取得できませんでした。")
                 cache.save(info, messages)
                 self._remember(key, info, messages)
 
+            if job.with_audio and loudness is None:
+                job.message = "音声を取得中…"
+                loudness = audio_mod.fetch_loudness(
+                    info, progress=stage_progress(chat_share, 0.92))
+                cache.save_audio(info, loudness)
+                self._remember(key, info, messages, loudness)
+
             job.message = "盛り上がりを解析中…"
             job.progress = 0.95
-            job.result = analyze(messages, info, job.params)
+            job.result = analyze(messages, info, job.params,
+                                 loudness=loudness if job.with_audio else None)
             job.result["video_key"] = key
             job.progress = 1.0
             job.message = "完了"

@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo 配信ハイライト抽出ツールを起動します...
 
-python -c "import fastapi, uvicorn, yt_dlp" 2>nul
+python -c "import fastapi, uvicorn, yt_dlp, imageio_ffmpeg" 2>nul
 if errorlevel 1 (
     echo 必要なライブラリをインストールします...
     python -m pip install -r stream_highlight\requirements.txt

@@ -10,6 +10,7 @@ import json
 import os
 import time
 
+from .audio import Loudness
 from .sources import ChatMessage, StreamInfo
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
@@ -25,20 +26,55 @@ def _path(platform, video_id):
     return os.path.join(CACHE_DIR, "%s_%s.json.gz" % (_safe(platform), _safe(video_id)))
 
 
-def save(info, messages):
+def _audio_path(platform, video_id):
+    return os.path.join(CACHE_DIR, "%s_%s.audio.json.gz" % (_safe(platform), _safe(video_id)))
+
+
+def _write_gz(path, payload):
     os.makedirs(CACHE_DIR, exist_ok=True)
-    payload = {
-        "version": CACHE_VERSION,
-        "saved_at": time.time(),
-        "info": info.as_dict(),
-        "messages": [m.to_list() for m in messages],
-    }
-    path = _path(info.platform, info.video_id)
     tmp = path + ".tmp"
     with gzip.open(tmp, "wt", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False)
     os.replace(tmp, path)
     return path
+
+
+def _read_gz(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def save(info, messages):
+    return _write_gz(_path(info.platform, info.video_id), {
+        "version": CACHE_VERSION,
+        "saved_at": time.time(),
+        "info": info.as_dict(),
+        "messages": [m.to_list() for m in messages],
+    })
+
+
+def save_audio(info, loudness):
+    """音量列を保存する。音声のダウンロードは重いので必ず使い回す。"""
+    return _write_gz(_audio_path(info.platform, info.video_id), {
+        "version": CACHE_VERSION,
+        "saved_at": time.time(),
+        "loudness": loudness.as_dict(),
+    })
+
+
+def load_audio(platform, video_id):
+    payload = _read_gz(_audio_path(platform, video_id))
+    if not payload or payload.get("version") != CACHE_VERSION:
+        return None
+    try:
+        return Loudness.from_dict(payload["loudness"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def load(platform, video_id):
@@ -64,7 +100,7 @@ def entries():
         return []
     out = []
     for name in os.listdir(CACHE_DIR):
-        if not name.endswith(".json.gz"):
+        if not name.endswith(".json.gz") or name.endswith(".audio.json.gz"):
             continue
         path = os.path.join(CACHE_DIR, name)
         try:
@@ -78,6 +114,7 @@ def entries():
                 "title": info.get("title") or info["video_id"],
                 "duration": info.get("duration") or 0,
                 "messages": len(payload.get("messages") or []),
+                "has_audio": os.path.exists(_audio_path(info["platform"], info["video_id"])),
                 "saved_at": payload.get("saved_at") or os.path.getmtime(path),
             })
         except (OSError, ValueError, KeyError):
@@ -87,8 +124,9 @@ def entries():
 
 
 def remove(platform, video_id):
-    path = _path(platform, video_id)
-    if os.path.exists(path):
-        os.remove(path)
-        return True
-    return False
+    removed = False
+    for path in (_path(platform, video_id), _audio_path(platform, video_id)):
+        if os.path.exists(path):
+            os.remove(path)
+            removed = True
+    return removed

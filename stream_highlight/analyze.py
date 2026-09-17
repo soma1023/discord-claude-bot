@@ -31,6 +31,12 @@ class Params:
     lead_sec: int = 30         # 切り出し開始をピークの何秒前にするか
     tail_sec: int = 15         # 切り出し終了をピークの何秒後にするか
 
+    # --- 音声解析（任意） ---
+    audio_min_z: float = 3.0      # 音量が跳ねたと判定するしきい値（MAD単位）
+    audio_min_db: float = 3.0     # 平常音量から最低これだけ上がっていること
+    chat_support_z: float = 2.0   # 音声ピークの後にチャットがどれだけ増えたか
+    chat_lag_sec: int = 20        # チャットが音声に遅れて反応する幅
+
     def as_dict(self):
         return asdict(self)
 
@@ -42,7 +48,10 @@ class Params:
             "bin_sec": (1, 60), "window_sec": (5, 300), "baseline_sec": (60, 3600),
             "min_z": (0.5, 10.0), "merge_sec": (5, 600), "top_n": (1, 200),
             "lead_sec": (0, 300), "tail_sec": (0, 300),
+            "audio_min_z": (0.5, 10.0), "audio_min_db": (0.0, 30.0),
+            "chat_support_z": (0.0, 10.0), "chat_lag_sec": (0, 120),
         }
+        floats = {"min_z", "audio_min_z", "audio_min_db", "chat_support_z"}
         kwargs = {}
         for field_name, (low, high) in limits.items():
             if field_name not in data or data[field_name] is None:
@@ -52,7 +61,7 @@ class Params:
             except (TypeError, ValueError):
                 continue
             value = max(low, min(high, value))
-            kwargs[field_name] = value if field_name == "min_z" else int(value)
+            kwargs[field_name] = value if field_name in floats else int(value)
         params = cls(**kwargs)
         if params.window_sec < params.bin_sec:
             params.window_sec = params.bin_sec
@@ -129,6 +138,14 @@ def rolling_median(values, half, stride=None):
             out[i] = va + (vb - va) * ((i - a) / span)
     out[n - 1] = sampled[-1]
     return out
+
+
+def mad(values):
+    """中央絶対偏差。外れ値（＝盛り上がりそのもの）に引きずられない散らばりの尺度。"""
+    if not values:
+        return 0.0
+    center = _median(sorted(values))
+    return _median(sorted(abs(v - center) for v in values))
 
 
 def zscores(density, baseline):
@@ -273,6 +290,91 @@ class Timeline:
         return out
 
 
+# ------------------------------------------------------------ 音声
+
+class AudioTrack:
+    """ラウドネス列を、チャットと同じ時間刻みの「跳ね具合」に変換する。
+
+    ラウドネスは既にデシベル（対数）なので、チャットのようなポアソン正規化ではなく
+    「平常音量から何dB上がったか」を、全体のばらつき（MAD）で割って無次元化する。
+    """
+
+    def __init__(self, timeline, loudness, params):
+        self.params = params
+        self.timeline = timeline
+        self.bin_sec = timeline.bin_sec
+        self.n = timeline.n
+        self.level = loudness.bin_max(timeline.bin_sec, timeline.n)
+        self.baseline = rolling_median(self.level, timeline.half_baseline)
+        self.excess = [lv - bs for lv, bs in zip(self.level, self.baseline)]
+        # 1dB未満のばらつきしかない音源でスコアが暴れないよう下限を置く
+        self.spread = max(mad(self.excess), 1.0)
+        self.z = [e / self.spread for e in self.excess]
+        self.lag_bins = max(1, int(round(params.chat_lag_sec / self.bin_sec)))
+
+    def at_chat_peak(self, peak):
+        """チャットのピークに対応する音声の跳ねを探す。
+
+        チャットは配信者の声より遅れて反応するので、少し前まで遡って見る。
+        """
+        lo = max(0, peak - self.lag_bins)
+        hi = min(self.n, peak + 2)
+        if lo >= hi:
+            return None
+        best = max(range(lo, hi), key=lambda i: self.z[i])
+        return {
+            "score": round(self.z[best], 2),
+            "excess_db": round(self.excess[best], 1),
+            "level": round(self.level[best], 1),
+            "at": round(best * self.bin_sec, 1),
+        }
+
+    def chat_rise(self, index):
+        """音声ピークの直後にチャットが増えたかを測る。
+
+        単に「後ろのチャットが多いか」を見ると、たまたま賑やかな箇所を拾ってしまう。
+        前後の実コメント数を比べて「後ろだけ増えた」ことを要求すると、
+        ランダムなゆらぎ（前後どちらにも同じだけ出る）を打ち消せる。
+
+        戻り値はポアソン近似のzスコア。無反応なら0付近になる。
+        """
+        lag = self.params.chat_lag_sec
+        t = index * self.bin_sec
+        before = len(self.timeline.messages_between(max(0.0, t - lag), t))
+        after = len(self.timeline.messages_between(t, t + lag))
+        return (after - before) / math.sqrt(after + before + 1)
+
+    def detect(self, merge_sec, top_n=20):
+        """音量のピークを拾い、チャットが反応しているものだけ残す。
+
+        ゲームのSEや効果音は音量だけ跳ねてチャットが動かないことが多いので、
+        この照合が誤検知フィルタとして効く。
+        """
+        p = self.params
+        merge_bins = max(1, int(round(merge_sec / self.bin_sec)))
+        candidates = [
+            i for i in range(self.n)
+            if self.z[i] >= p.audio_min_z and self.excess[i] >= p.audio_min_db
+        ]
+        candidates.sort(key=lambda i: self.z[i], reverse=True)
+
+        peaks = []
+        for i in candidates:
+            if any(abs(i - j) < merge_bins for j in peaks):
+                continue
+            peaks.append(i)
+
+        confirmed = [(i, self.chat_rise(i)) for i in peaks]
+        confirmed = [(i, rise) for i, rise in confirmed if rise >= p.chat_support_z]
+        confirmed.sort(key=lambda pair: self.z[pair[0]], reverse=True)
+
+        return confirmed[:top_n], {
+            "raw_peaks": len(peaks),
+            "confirmed": len(confirmed),
+            "rejected": len(peaks) - len(confirmed),
+        }
+
+
 # ------------------------------------------------------------ 見せ場の組み立て
 
 def _top_comments(timeline, idxs, limit=5):
@@ -354,18 +456,26 @@ def _downsample(values, step):
     return out
 
 
-def analyze(messages, info, params=None, max_points=1800):
-    """解析のメイン。UIにそのまま渡せる辞書を返す。"""
+def analyze(messages, info, params=None, max_points=1800, loudness=None):
+    """解析のメイン。UIにそのまま渡せる辞書を返す。
+
+    loudness を渡すと、音声の跳ねを併せて見る。
+    """
     params = params or Params()
     timeline = Timeline(messages, info.duration, params)
 
     counts = timeline.counts()
     picked, density, baseline, z = timeline.detect(counts)
 
+    track = AudioTrack(timeline, loudness, params) if loudness is not None else None
+
     moments = []
     for rank, peak in enumerate(picked, 1):
         moment = _build_moment(timeline, info, peak, z, density, baseline, params.min_z)
         moment["rank"] = rank
+        moment["source"] = "chat"
+        if track:
+            moment["audio"] = track.at_chat_peak(peak)
         moments.append(moment)
 
     # カテゴリ別のランキング（「wwwが多かったところ」など）
@@ -386,6 +496,36 @@ def analyze(messages, info, params=None, max_points=1800):
                                params.min_z), rank=i)
             for i, peak in enumerate(cat_picked, 1)
         ]
+
+    # 音声が跳ねていて、かつチャットも反応している箇所。
+    # チャット単独のしきい値では拾いきれなかったものを補う。
+    audio_moments = []
+    audio_payload = {"available": False}
+    if track:
+        step_a = max(1, timeline.n // max_points)
+        confirmed, audio_stats = track.detect(params.merge_sec, top_n=params.top_n)
+        merge_bins = max(1, int(round(params.merge_sec / timeline.bin_sec)))
+        extra = [(i, rise) for i, rise in confirmed
+                 if all(abs(i - j) >= merge_bins for j in picked)]
+        for rank, (peak, rise) in enumerate(extra, 1):
+            moment = _build_moment(timeline, info, peak, z, density, baseline, params.min_z)
+            moment["rank"] = rank
+            moment["source"] = "audio"
+            moment["audio"] = {
+                "score": round(track.z[peak], 2),
+                "excess_db": round(track.excess[peak], 1),
+                "level": round(track.level[peak], 1),
+                "at": round(peak * timeline.bin_sec, 1),
+                "chat_rise": round(rise, 2),
+            }
+            audio_moments.append(moment)
+        audio_stats["already_in_chat_list"] = len(confirmed) - len(extra)
+        audio_payload = {
+            "available": True,
+            "stats": audio_stats,
+            "spread_db": round(track.spread, 2),
+            "excess": _downsample(track.excess, step_a),
+        }
 
     total = len([m for m in messages if m.offset >= 0])
     stats = {
@@ -425,6 +565,8 @@ def analyze(messages, info, params=None, max_points=1800):
         ],
         "moments": moments,
         "category_moments": category_rankings,
+        "audio": audio_payload,
+        "audio_moments": audio_moments,
     }
 
 

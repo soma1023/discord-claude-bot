@@ -15,6 +15,9 @@
     <input id="urlInput" type="text" placeholder="YouTube / Twitch のアーカイブURLを貼る" spellcheck="false">
     <button id="runBtn" type="submit">解析</button>
   </form>
+  <label class="checkbox" id="audioLabel" title="配信者の声が大きくなった瞬間も見る（音声のダウンロードが必要で時間がかかります）">
+    <input type="checkbox" id="audioInput"> 音声も解析
+  </label>
   <label class="checkbox" title="保存済みのチャットを使わず取得し直す">
     <input type="checkbox" id="refreshInput"> 再取得
   </label>
@@ -76,8 +79,12 @@
 
     <div class="panel">
       <div id="tabs" class="tabs"></div>
+      <div id="audioSummary" class="audio-summary hidden"></div>
       <div class="list-head">
         <span id="listSummary" class="muted"></span>
+        <label class="checkbox hidden" id="audioFilterLabel">
+          <input type="checkbox" id="audioFilter"> 音声も跳ねた候補だけ
+        </label>
         <div class="exports">
           <button id="copyBtn" class="ghost" type="button">タイムスタンプをコピー</button>
           <button id="chapterBtn" class="ghost" type="button">チャプター形式でコピー</button>
@@ -113,6 +120,14 @@
         <label>候補の最大件数
           <input type="range" id="topN" min="5" max="100" step="5">
           <output id="topNOut"></output>
+        </label>
+        <label>音量のしきい値（音声解析時）
+          <input type="range" id="audioMinZ" min="1" max="8" step="0.5">
+          <output id="audioMinZOut"></output>
+        </label>
+        <label>チャット照合の厳しさ（上げるとSEの誤検知が減る）
+          <input type="range" id="chatSupportZ" min="0" max="5" step="0.5">
+          <output id="chatSupportZOut"></output>
         </label>
       </div>
       <p class="muted small">

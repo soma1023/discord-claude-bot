@@ -6,16 +6,21 @@ const state = {
   videoKey: null,
   tab: "all",
   moments: [],
+  visible: [],
   selected: null,
   view: { start: 0, end: 0 },
   overlays: new Set(),
   keyword: null,
   hover: null,
   drag: null,
+  audioOverlayTouched: false,
   poll: null,
 };
 
 const CATEGORY_COLORS = {};
+const AUDIO_KEY = "__audio__";
+// これ未満の跳ねは「声が大きくなった」と言うには弱いので、バッジを出さない
+const AUDIO_BADGE_DB = 3.0;
 const $ = (id) => document.getElementById(id);
 
 /* ------------------------------------------------------------ 小物 */
@@ -79,6 +84,8 @@ function currentParams() {
     tail_sec: parseInt($("tailSec").value, 10),
     window_sec: parseInt($("windowSec").value, 10),
     top_n: parseInt($("topN").value, 10),
+    audio_min_z: parseFloat($("audioMinZ").value),
+    chat_support_z: parseFloat($("chatSupportZ").value),
   };
 }
 
@@ -96,7 +103,10 @@ async function startAnalyze(url, refresh) {
     const { job_id } = await api("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, refresh: !!refresh, params: currentParams() }),
+      body: JSON.stringify({
+        url, refresh: !!refresh, with_audio: $("audioInput").checked,
+        params: currentParams(),
+      }),
     });
     pollJob(job_id);
   } catch (err) {
@@ -139,7 +149,10 @@ async function reanalyze() {
     const result = await api("/api/reanalyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ video_key: state.videoKey, params: currentParams() }),
+      body: JSON.stringify({
+        video_key: state.videoKey, with_audio: $("audioInput").checked,
+        params: currentParams(),
+      }),
     });
     state.keyword = null;
     applyResult(result);
@@ -164,6 +177,11 @@ function applyResult(result) {
   state.selected = null;
   state.view = { start: 0, end: result.stats.duration || 1 };
   (result.categories || []).forEach((c) => (CATEGORY_COLORS[c.id] = c.color));
+  PAD.r = result.audio && result.audio.available ? 46 : 14;   // 右軸のラベル用
+  // 音声を解析したなら、わざわざ消すまでは重ねて見せる
+  if (result.audio && result.audio.available && !state.audioOverlayTouched) {
+    state.overlays.add(AUDIO_KEY);
+  }
 
   // サーバ側で丸められた値をUIに戻す
   const p = result.params;
@@ -173,10 +191,13 @@ function applyResult(result) {
   $("tailSec").value = p.tail_sec;
   $("windowSec").value = p.window_sec;
   $("topN").value = p.top_n;
+  $("audioMinZ").value = p.audio_min_z;
+  $("chatSupportZ").value = p.chat_support_z;
   syncOutputs();
 
   $("resultPanel").classList.remove("hidden");
   renderVideo(result);
+  renderAudioSummary(result);
   renderOverlayToggles(result);
   renderTabs();
   selectTab(state.keyword ? "keyword" : "all");
@@ -210,10 +231,34 @@ function renderVideo(result) {
   notice.classList.toggle("hidden", !result.notice);
 }
 
+function renderAudioSummary(result) {
+  const box = $("audioSummary");
+  const filter = $("audioFilterLabel");
+  const audio = result.audio || {};
+  if (!audio.available) {
+    box.classList.add("hidden");
+    filter.classList.add("hidden");
+    return;
+  }
+  const st = audio.stats;
+  box.innerHTML =
+    `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
+    `（<b>${st.rejected}</b>件を除外）。` +
+    `うち <b>${st.already_in_chat_list}</b>件はチャット側で既に拾えていたので、` +
+    `「音声」タブには残り <b>${result.audio_moments.length}</b>件を出しています。` +
+    `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。</span>`;
+  box.classList.remove("hidden");
+  filter.classList.remove("hidden");
+}
+
+const AUDIO_OVERLAY = { id: "__audio__", label: "音量", color: "#db61a2" };
+
 function renderOverlayToggles(result) {
   const box = $("overlayToggles");
   box.innerHTML = "";
-  (result.categories || []).forEach((cat) => {
+  const items = (result.categories || []).slice();
+  if (result.audio && result.audio.available) items.unshift(AUDIO_OVERLAY);
+  items.forEach((cat) => {
     const btn = document.createElement("button");
     btn.className = "toggle" + (state.overlays.has(cat.id) ? " on" : "");
     btn.textContent = cat.label;
@@ -221,6 +266,7 @@ function renderOverlayToggles(result) {
     btn.style.color = state.overlays.has(cat.id) ? "#06111f" : cat.color;
     btn.style.background = state.overlays.has(cat.id) ? cat.color : "transparent";
     btn.onclick = () => {
+      if (cat.id === AUDIO_KEY) state.audioOverlayTouched = true;
       if (state.overlays.has(cat.id)) state.overlays.delete(cat.id);
       else state.overlays.add(cat.id);
       renderOverlayToggles(result);
@@ -238,6 +284,8 @@ function renderTabs() {
     const list = state.result.category_moments[cat.id];
     if (list && list.length) items.push({ id: cat.id, label: `${cat.label} (${list.length})` });
   });
+  const audioList = state.result.audio_moments || [];
+  if (audioList.length) items.push({ id: "audio", label: `音声 (${audioList.length})` });
   if (state.keyword) items.push({ id: "keyword", label: `「${state.keyword.keyword}」` });
 
   items.forEach((item) => {
@@ -252,6 +300,7 @@ function renderTabs() {
 function momentsForTab(tab) {
   if (!state.result) return [];
   if (tab === "all") return state.result.moments;
+  if (tab === "audio") return state.result.audio_moments || [];
   if (tab === "keyword") return state.keyword ? state.keyword.moments : [];
   return state.result.category_moments[tab] || [];
 }
@@ -266,16 +315,28 @@ function selectTab(tab) {
   draw();
 }
 
+$("audioFilter").addEventListener("change", () => {
+  state.selected = null;
+  renderMoments();
+  draw();
+});
+
 function renderMoments() {
   const list = $("momentList");
   list.innerHTML = "";
-  const moments = state.moments;
+  const audioOnly = $("audioFilter").checked && !$("audioFilterLabel").classList.contains("hidden");
+  const moments = audioOnly
+    ? state.moments.filter((m) => m.audio && m.audio.excess_db >= AUDIO_BADGE_DB)
+    : state.moments;
+  state.visible = moments;
 
   let summary;
   if (state.tab === "keyword" && state.keyword) {
     summary = `「${state.keyword.keyword}」は ${num(state.keyword.hits)} 回。よく飛んでいた順に ${moments.length} 箇所。`;
   } else if (!moments.length) {
-    summary = "該当する候補がありません。感度を下げてみてください。";
+    summary = audioOnly
+      ? "音声も跳ねた候補はありませんでした。絞り込みを外してください。"
+      : "該当する候補がありません。感度を下げてみてください。";
   } else {
     summary = `盛り上がった順に ${moments.length} 箇所。時刻をクリックすると配信のその場面が開きます。`;
   }
@@ -289,7 +350,11 @@ function renderMoments() {
     const chips = (m.tags || []).map((t) => {
       const color = CATEGORY_COLORS[t.id] || "#8b949e";
       return `<span class="chip" style="background:${color}">${escapeHtml(t.label)} ${t.count}</span>`;
-    }).join("");
+    }).join("") + (
+      m.audio && m.audio.excess_db >= AUDIO_BADGE_DB
+        ? `<span class="chip audio" title="平常の音量より ${m.audio.excess_db}dB 大きい">声 +${m.audio.excess_db}dB</span>`
+        : ""
+    );
 
     // 普段ほぼ出ないワードでは「普段の◯倍」が意味を持たないので出し分ける
     const hasBaseline = m.baseline_rate >= 1;
@@ -313,6 +378,7 @@ function renderMoments() {
         <div>
           <a class="time" href="${escapeHtml(m.url)}" target="_blank" rel="noopener">${fmtTime(m.clip_start)}</a>
           <span class="range">${fmtTime(m.clip_start)} 〜 ${fmtTime(m.clip_end)}（ピーク ${fmtTime(m.peak_sec)}）</span>
+          ${m.source === "audio" ? '<span class="source-audio">音声から検出</span>' : ""}
         </div>
         <div class="metrics">${metrics}</div>
         <div class="chips">${chips}</div>
@@ -345,7 +411,7 @@ function renderMoments() {
 
 function selectMoment(index, zoom) {
   state.selected = index;
-  const m = state.moments[index];
+  const m = state.visible[index];
   if (m && zoom) {
     const pad = Math.max(120, (m.clip_end - m.clip_start) * 4);
     setView(m.peak_sec - pad, m.peak_sec + pad);
@@ -364,7 +430,7 @@ function highlightSelected() {
 
 const canvas = $("graph");
 const ctx = canvas.getContext("2d");
-const PAD = { l: 46, r: 14, t: 26, b: 24 };
+const PAD = { l: 46, r: 14, t: 26, b: 24 };   // r は音量の右軸がある時だけ広げる
 let plot = { w: 0, h: 0, width: 0, height: 0 };
 
 function resizeCanvas() {
@@ -438,9 +504,13 @@ function draw() {
   const base = columns(series.baseline, bin);
   const overlays = [];
   state.overlays.forEach((cid) => {
+    if (cid === AUDIO_KEY) return;   // 音量は単位が違うので右軸で別に描く
     const values = series.categories[cid];
     if (values) overlays.push({ color: CATEGORY_COLORS[cid] || "#fff", cols: columns(values, bin) });
   });
+  const audioOn = state.overlays.has(AUDIO_KEY) &&
+                  state.result.audio && state.result.audio.available;
+  const audioCols = audioOn ? columns(state.result.audio.excess, bin) : null;
   if (state.tab === "keyword" && state.keyword && state.keyword.series.length) {
     overlays.push({ color: "#ffd866", cols: columns(state.keyword.series, state.keyword.bin_sec) });
   }
@@ -491,7 +561,7 @@ function draw() {
   }
 
   // 選択中の見せ場の範囲
-  const selected = state.moments[state.selected];
+  const selected = state.visible[state.selected];
   if (selected) {
     const x0 = timeToX(selected.clip_start);
     const x1 = timeToX(selected.clip_end);
@@ -535,8 +605,44 @@ function draw() {
   });
   ctx.lineWidth = 1;
 
+  // 音量（平常からの差・dB）。コメント数とは単位が違うので右側の軸に振る
+  if (audioOn) {
+    let aMax = 6;
+    let aMin = 0;
+    audioCols.forEach((v) => {
+      if (v > aMax) aMax = v;
+      if (v < aMin) aMin = v;
+    });
+    aMax = niceMax(aMax);
+    aMin = Math.min(-3, Math.floor(aMin));
+    const yAudio = (v) => PAD.t + plot.h - ((v - aMin) / (aMax - aMin)) * plot.h;
+
+    ctx.strokeStyle = "rgba(219,97,162,0.35)";
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(PAD.l, yAudio(0));
+    ctx.lineTo(PAD.l + plot.w, yAudio(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    audioCols.forEach((v, px) => (px ? ctx.lineTo(PAD.l + px, yAudio(v))
+                                     : ctx.moveTo(PAD.l, yAudio(v))));
+    ctx.strokeStyle = AUDIO_OVERLAY.color;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    ctx.fillStyle = AUDIO_OVERLAY.color;
+    ctx.textAlign = "left";
+    [aMax, 0].forEach((v) => ctx.fillText((v > 0 ? "+" : "") + v + "dB",
+                                          PAD.l + plot.w + 5, yAudio(v) + 4));
+    ctx.fillText("音量", PAD.l + plot.w + 5, PAD.t - 12);
+    ctx.textAlign = "center";
+  }
+
   // 候補のマーカー
-  state.moments.forEach((m, index) => {
+  state.visible.forEach((m, index) => {
     if (m.peak_sec < state.view.start || m.peak_sec > state.view.end) return;
     const x = Math.round(timeToX(m.peak_sec)) + 0.5;
     const isSel = index === state.selected;
@@ -587,7 +693,7 @@ function eventX(ev) {
 function nearestMoment(t) {
   let best = null;
   let bestDist = Infinity;
-  state.moments.forEach((m, index) => {
+  state.visible.forEach((m, index) => {
     const dist = Math.abs(m.peak_sec - t);
     if (dist < bestDist) {
       bestDist = dist;
@@ -612,8 +718,13 @@ canvas.addEventListener("mousemove", (ev) => {
     `<b>${fmtTime(state.hover)}</b>`,
     `${Math.round(series.rate[idx])} コメ/分（平常 ${Math.round(series.baseline[idx])}）`,
   ];
+  if (state.overlays.has(AUDIO_KEY) && state.result.audio && state.result.audio.available) {
+    const excess = state.result.audio.excess;
+    const ai = Math.min(excess.length - 1, Math.max(0, Math.floor(state.hover / series.bin_sec)));
+    lines.push(`<span style="color:${AUDIO_OVERLAY.color}">音量 ${excess[ai] > 0 ? "+" : ""}${excess[ai]}dB</span>`);
+  }
   if (near != null) {
-    const m = state.moments[near];
+    const m = state.visible[near];
     const tags = (m.tags || []).map((t) => `${t.label}${t.count}`).join(" ");
     lines.push(`<span style="color:#58a6ff">#${m.rank} 普段の${m.ratio}倍 ${escapeHtml(tags)}</span>`);
   }
@@ -723,7 +834,7 @@ function copyText(text, button, label) {
 }
 
 $("copyBtn").onclick = (ev) => {
-  const lines = state.moments.map((m) => {
+  const lines = state.visible.map((m) => {
     const tags = (m.tags || []).map((t) => `${t.label}${t.count}`).join(" ");
     return `${fmtTime(m.clip_start)}  #${m.rank} 普段の${m.ratio}倍 ${tags}  ${m.url}`;
   });
@@ -731,7 +842,7 @@ $("copyBtn").onclick = (ev) => {
 };
 
 $("chapterBtn").onclick = (ev) => {
-  const lines = state.moments
+  const lines = state.visible
     .slice()
     .sort((a, b) => a.clip_start - b.clip_start)
     .map((m) => {
@@ -744,7 +855,7 @@ $("chapterBtn").onclick = (ev) => {
 $("csvBtn").onclick = () => {
   const header = ["順位", "開始", "終了", "ピーク", "秒", "倍率", "スコア", "コメ/分",
                   "コメント数", "人数", "タグ", "代表コメント", "URL"];
-  const rows = state.moments.map((m) => [
+  const rows = state.visible.map((m) => [
     m.rank, fmtTime(m.clip_start), fmtTime(m.clip_end), fmtTime(m.peak_sec),
     m.peak_sec, m.ratio, m.score, m.rate, m.messages, m.authors,
     (m.tags || []).map((t) => `${t.label}${t.count}`).join(" "),
@@ -797,13 +908,29 @@ async function loadHistory() {
 
 /* ------------------------------------------------------------ 初期化 */
 
+async function loadCapabilities() {
+  try {
+    const caps = await api("/api/capabilities");
+    if (!caps.ffmpeg) {
+      $("audioInput").disabled = true;
+      $("audioLabel").classList.add("disabled");
+      $("audioLabel").title =
+        "音声解析には ffmpeg が必要です。`pip install imageio-ffmpeg` で使えるようになります。";
+    }
+  } catch (err) {
+    /* 判定できなければ触らずそのままにする */
+  }
+}
+
 function syncOutputs() {
   const pairs = [["minZ", "minZOut"], ["mergeSec", "mergeSecOut"], ["leadSec", "leadSecOut"],
-                 ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"]];
+                 ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"],
+                 ["audioMinZ", "audioMinZOut"], ["chatSupportZ", "chatSupportZOut"]];
   pairs.forEach(([input, out]) => ($(out).value = $(input).value));
 }
 
-["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN"].forEach((id) => {
+["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN",
+ "audioMinZ", "chatSupportZ"].forEach((id) => {
   $(id).addEventListener("input", syncOutputs);
 });
 
@@ -826,5 +953,8 @@ $("leadSec").value = 30;
 $("tailSec").value = 15;
 $("windowSec").value = 30;
 $("topN").value = 30;
+$("audioMinZ").value = 3;
+$("chatSupportZ").value = 2;
 syncOutputs();
 loadHistory();
+loadCapabilities();

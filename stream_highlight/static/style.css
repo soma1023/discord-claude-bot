@@ -76,7 +76,8 @@ button.ghost {
 }
 button.ghost:hover { color: var(--text); border-color: var(--accent); }
 
-.checkbox { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.checkbox { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+.checkbox.disabled { opacity: 0.4; cursor: not-allowed; }
 
 main { max-width: 1180px; margin: 0 auto; padding: 16px 20px 80px; }
 
@@ -146,6 +147,15 @@ canvas { width: 100%; height: 260px; display: block; cursor: crosshair; }
   border-radius: 6px; padding: 6px 10px; font-size: 12px;
   white-space: nowrap; transform: translate(-50%, -100%);
 }
+
+.audio-summary {
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-left: 3px solid #db61a2; border-radius: 6px;
+  padding: 8px 12px; margin: 12px 0; font-size: 12px; color: var(--muted);
+}
+.audio-summary b { color: var(--text); font-variant-numeric: tabular-nums; }
+.chip.audio { background: #db61a2; }
+.moment .source-audio { color: #db61a2; font-size: 11px; font-weight: 700; }
 
 /* 検索 */
 .search-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
