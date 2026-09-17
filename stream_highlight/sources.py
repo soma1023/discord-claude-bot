@@ -405,6 +405,7 @@ def fetch_youtube_chat(url, progress=None):
 _GQL_URL = "https://gql.twitch.tv/gql"
 _GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"   # Twitch Web が公開している値
 _GQL_HASH = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a"
+_NULL_RETRY_WAIT = 1.5      # 空応答の再試行間隔（テストでは0にする）
 
 
 def _gql_post(payload, retries=4):
@@ -458,18 +459,64 @@ def _node_to_message(node):
     )
 
 
-def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advance):
-    """[start, end) 区間のコメントをページングで集める。"""
+def _extract_comments(payload):
+    """GQL応答から comments を取り出す。取れない場合は理由を返す。
+
+    Twitchは HTTP 200 のまま data.video.comments を null で返すことがある
+    （混雑・レート制限・サブスク限定VODなど）ので、例外に頼らず形を確かめる。
+    """
+    if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
+        return None, "Twitchの応答が想定と違う形式でした"
+    first = payload[0]
+
+    errors = first.get("errors")
+    if isinstance(errors, list) and errors:
+        messages = [e.get("message") for e in errors if isinstance(e, dict)]
+        detail = "; ".join(m for m in messages if m)
+        return None, "Twitchがエラーを返しました: %s" % (detail or "詳細不明")
+
+    data = first.get("data")
+    if not isinstance(data, dict):
+        return None, "Twitchの応答にデータが含まれていませんでした"
+    video = data.get("video")
+    if video is None:
+        return None, ("VODが見つかりませんでした。"
+                      "削除済み・非公開・サブスク限定の可能性があります。")
+    if not isinstance(video, dict):
+        return None, "Twitchの応答が想定と違う形式でした"
+
+    comments = video.get("comments")
+    if not isinstance(comments, dict):
+        return None, ("Twitchがチャットを返しませんでした。"
+                      "混雑・アクセス制限のほか、チャットが残っていない可能性があります。")
+    return comments, None
+
+
+def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advance,
+                          failures=None):
+    """[start, end) 区間のコメントをページングで集める。
+
+    取得できなかった区間があっても、他の区間で取れた分は捨てない。
+    全区間が空だったときだけ、記録しておいた理由を使って失敗させる。
+    """
     cursor = None
     offset = start
     pages = 0
     while pages < 5000:
-        payload = _gql_post([_comment_request(video_id, offset=offset, cursor=cursor)])
+        comments = None
+        reason = None
+        for attempt in range(3):
+            payload = _gql_post([_comment_request(video_id, offset=offset, cursor=cursor)])
+            comments, reason = _extract_comments(payload)
+            if comments is not None:
+                break
+            if attempt < 2:
+                time.sleep(_NULL_RETRY_WAIT * (attempt + 1))   # 一時的な混雑なら待てば通る
+        if comments is None:
+            if failures is not None:
+                failures.append(reason or "チャットを取得できませんでした")
+            return
         pages += 1
-        try:
-            comments = payload[0]["data"]["video"]["comments"]
-        except (KeyError, IndexError, TypeError):
-            raise FetchError("TwitchのVODが見つからないか、チャットが取得できませんでした。")
         edges = comments.get("edges") or []
         if not edges:
             return
@@ -497,7 +544,7 @@ def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advanc
         offset = None
 
 
-def fetch_twitch_chat(video_id, duration=0, progress=None, workers=8):
+def fetch_twitch_chat(video_id, duration=0, progress=None, workers=3):
     """TwitchのVODコメントを取得する。長い配信は区間分割して並列に取る。"""
     seen = set()
     collected = []
@@ -523,33 +570,36 @@ def fetch_twitch_chat(video_id, duration=0, progress=None, workers=8):
                     )
         return on_advance
 
-    # 3分未満の細切れは無駄なので、区間数は配信の長さから決める
-    if duration > 900 and workers > 1:
-        segments = max(1, min(workers, int(duration // 600)))
+    # 並列に取りに行くと速いが、増やしすぎるとTwitch側に弾かれる。
+    # 30分以上のVODを、控えめな数で分担する。
+    failures = []
+    if duration > 1800 and workers > 1:
+        segments = max(1, min(workers, int(duration // 900)))
     else:
         segments = 1
 
     if segments == 1:
         _fetch_twitch_segment(video_id, 0, None, seen, lock, collected,
-                              make_advance(duration or 1e9))
+                              make_advance(duration or 1e9), failures)
     else:
         seg_len = duration / segments
         bounds = [(i * seg_len, (i + 1) * seg_len if i < segments - 1 else None)
                   for i in range(segments)]
-        errors = []
         with ThreadPoolExecutor(max_workers=segments) as pool:
             futures = [
                 pool.submit(_fetch_twitch_segment, video_id, start, end,
-                            seen, lock, collected, make_advance(seg_len))
+                            seen, lock, collected, make_advance(seg_len), failures)
                 for start, end in bounds
             ]
             for fut in futures:
                 try:
                     fut.result()
                 except FetchError as exc:
-                    errors.append(exc)
-        if errors and not collected:
-            raise errors[0]
+                    failures.append(str(exc))
+
+    if not collected:
+        raise FetchError(failures[0] if failures
+                         else "このVODからコメントを取得できませんでした。")
 
     collected.sort(key=lambda m: m.offset)
     return collected

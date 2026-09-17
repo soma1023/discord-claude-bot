@@ -187,6 +187,14 @@ class TestYouTubeParsing(unittest.TestCase):
 
 
 class TestTwitchParsing(unittest.TestCase):
+    def setUp(self):
+        # 再試行の待ち時間でテストを遅くしない
+        self._wait = sources._NULL_RETRY_WAIT
+        sources._NULL_RETRY_WAIT = 0
+
+    def tearDown(self):
+        sources._NULL_RETRY_WAIT = self._wait
+
     def test_node_to_message(self):
         node = {
             "id": "c1",
@@ -255,16 +263,86 @@ class TestTwitchParsing(unittest.TestCase):
         self.assertEqual(calls, [None, "c2"])
         self.assertEqual([m.text for m in collected], ["1", "2"])   # 重複と区間外を除外
 
-    def test_missing_video_raises(self):
+    def test_null_comments_does_not_crash(self):
+        """comments が null でも落ちず、理由の分かるエラーになること。"""
+        import threading
         original = sources._gql_post
-        sources._gql_post = lambda payload, retries=4: [{"data": {"video": None}}]
+        sources._gql_post = lambda payload, retries=4: [
+            {"data": {"video": {"id": "1", "comments": None}}}]
+        failures = []
         try:
-            import threading
-            with self.assertRaises(FetchError):
-                sources._fetch_twitch_segment("1", 0, None, set(), threading.Lock(),
-                                              [], lambda _: None)
+            sources._fetch_twitch_segment("1", 0, None, set(), threading.Lock(),
+                                          [], lambda _: None, failures)
         finally:
             sources._gql_post = original
+        self.assertTrue(failures)
+        self.assertIn("Twitchがチャットを返しませんでした", failures[0])
+
+    def test_graphql_errors_are_surfaced(self):
+        """Twitchが返したエラー本文を、そのまま利用者に見せること。"""
+        comments, reason = sources._extract_comments(
+            [{"errors": [{"message": "service timeout"}]}])
+        self.assertIsNone(comments)
+        self.assertIn("service timeout", reason)
+
+    def test_deleted_video_message(self):
+        comments, reason = sources._extract_comments([{"data": {"video": None}}])
+        self.assertIsNone(comments)
+        self.assertIn("見つかりません", reason)
+
+    def test_malformed_payloads(self):
+        for payload in (None, [], [None], "文字列", [{}], [{"data": None}]):
+            comments, reason = sources._extract_comments(payload)
+            self.assertIsNone(comments)
+            self.assertTrue(reason)
+
+    def test_partial_failure_keeps_what_was_collected(self):
+        """一部の区間が取れなくても、取れた分は返すこと。"""
+        import threading
+        calls = {"n": 0}
+
+        def flaky(payload, retries=4):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return [{"data": {"video": {"comments": {
+                    "edges": [{"cursor": "c1", "node": {
+                        "id": "a", "contentOffsetSeconds": 1,
+                        "commenter": {"displayName": "u"},
+                        "message": {"fragments": [{"text": "残るコメント"}]}}}],
+                    "pageInfo": {"hasNextPage": False}}}}}]
+            return [{"data": {"video": {"comments": None}}}]
+
+        original = sources._gql_post
+        sources._gql_post = flaky
+        try:
+            messages = sources.fetch_twitch_chat("1", duration=0)
+        finally:
+            sources._gql_post = original
+        self.assertEqual([m.text for m in messages], ["残るコメント"])
+
+    def test_all_segments_empty_raises_with_reason(self):
+        original = sources._gql_post
+        sources._gql_post = lambda payload, retries=4: [
+            {"errors": [{"message": "failed integrity check"}]}]
+        try:
+            with self.assertRaises(FetchError) as ctx:
+                sources.fetch_twitch_chat("1", duration=0)
+        finally:
+            sources._gql_post = original
+        self.assertIn("failed integrity check", str(ctx.exception))
+
+    def test_missing_video_is_reported(self):
+        import threading
+        original = sources._gql_post
+        sources._gql_post = lambda payload, retries=4: [{"data": {"video": None}}]
+        failures = []
+        try:
+            sources._fetch_twitch_segment("1", 0, None, set(), threading.Lock(),
+                                          [], lambda _: None, failures)
+        finally:
+            sources._gql_post = original
+        self.assertTrue(failures)
+        self.assertIn("削除済み", failures[0])
 
 
 class TestUrls(unittest.TestCase):
