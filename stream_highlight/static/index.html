@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>配信ハイライト抽出</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230d1117'/%3E%3Cpath d='M2 12h2V8H2zm4 0h2V3H6zm4 0h2V6h-2zm4 0h2V9h-2z' fill='%2358a6ff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>配信ハイライト抽出</h1>
+  <form id="urlForm" class="url-form" autocomplete="off">
+    <input id="urlInput" type="text" placeholder="YouTube / Twitch のアーカイブURLを貼る" spellcheck="false">
+    <button id="runBtn" type="submit">解析</button>
+  </form>
+  <label class="checkbox" title="保存済みのチャットを使わず取得し直す">
+    <input type="checkbox" id="refreshInput"> 再取得
+  </label>
+</header>
+
+<main>
+  <section id="progressPanel" class="panel hidden">
+    <div class="progress-row">
+      <div class="spinner"></div>
+      <div>
+        <div id="progressMessage">準備中…</div>
+        <div class="progress-track"><div id="progressBar" class="progress-fill"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="errorPanel" class="panel error hidden"></section>
+
+  <section id="historyPanel" class="panel">
+    <h2>最近解析した配信</h2>
+    <div id="historyList" class="history-list"></div>
+  </section>
+
+  <section id="resultPanel" class="hidden">
+
+    <div class="panel video-card">
+      <img id="videoThumb" alt="" class="thumb hidden">
+      <div class="video-meta">
+        <a id="videoTitle" class="video-title" target="_blank" rel="noopener"></a>
+        <div id="videoChannel" class="muted"></div>
+        <div id="videoStats" class="stats"></div>
+      </div>
+    </div>
+
+    <div id="noticePanel" class="panel notice hidden"></div>
+
+    <div class="panel graph-panel">
+      <div class="graph-head">
+        <h2>コメント密度</h2>
+        <div id="overlayToggles" class="toggles"></div>
+        <div class="graph-tools">
+          <span class="hint">ドラッグで拡大 / ダブルクリックで戻す / クリックでその時刻を開く</span>
+          <button id="resetZoom" class="ghost" type="button">全体表示</button>
+        </div>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="graph"></canvas>
+        <div id="tooltip" class="tooltip hidden"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="search-row">
+        <input id="keywordInput" type="text" placeholder="特定のコメントで探す（例: www、かわいい、！）" spellcheck="false">
+        <button id="keywordBtn" type="button">このワードで探す</button>
+        <span id="keywordInfo" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div id="tabs" class="tabs"></div>
+      <div class="list-head">
+        <span id="listSummary" class="muted"></span>
+        <div class="exports">
+          <button id="copyBtn" class="ghost" type="button">タイムスタンプをコピー</button>
+          <button id="chapterBtn" class="ghost" type="button">チャプター形式でコピー</button>
+          <button id="csvBtn" class="ghost" type="button">CSV保存</button>
+        </div>
+      </div>
+      <ol id="momentList" class="moments"></ol>
+    </div>
+
+    <details class="panel settings">
+      <summary>解析の設定</summary>
+      <div class="settings-grid">
+        <label>感度（低いほど候補が増える）
+          <input type="range" id="minZ" min="1" max="8" step="0.5">
+          <output id="minZOut"></output>
+        </label>
+        <label>まとめる間隔（秒）
+          <input type="range" id="mergeSec" min="15" max="300" step="15">
+          <output id="mergeSecOut"></output>
+        </label>
+        <label>ピークの何秒前から
+          <input type="range" id="leadSec" min="0" max="120" step="5">
+          <output id="leadSecOut"></output>
+        </label>
+        <label>ピークの何秒後まで
+          <input type="range" id="tailSec" min="0" max="120" step="5">
+          <output id="tailSecOut"></output>
+        </label>
+        <label>反応をまとめる窓（秒）
+          <input type="range" id="windowSec" min="10" max="120" step="5">
+          <output id="windowSecOut"></output>
+        </label>
+        <label>候補の最大件数
+          <input type="range" id="topN" min="5" max="100" step="5">
+          <output id="topNOut"></output>
+        </label>
+      </div>
+      <p class="muted small">
+        チャットは保存済みなので、設定を変えても再ダウンロードは発生しません。
+      </p>
+      <button id="applyBtn" type="button">この設定で解析し直す</button>
+    </details>
+
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

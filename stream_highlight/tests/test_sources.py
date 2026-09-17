@@ -1,0 +1,230 @@
+# -*- coding: utf-8 -*-
+"""チャット取得まわりのパーサを、実際のレスポンス構造を模したデータで確かめる。
+
+ネットワークには出ない。YouTubeの live_chat.json と TwitchのGQL応答は、
+それぞれ実物と同じ入れ子構造で組み立てている。
+"""
+
+import json
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from stream_highlight import sources
+from stream_highlight.sources import FetchError, parse_url
+
+
+def text_item(offset_ms, author, runs, msg_id="x"):
+    return json.dumps({
+        "replayChatItemAction": {
+            "actions": [{
+                "addChatItemAction": {
+                    "item": {
+                        "liveChatTextMessageRenderer": {
+                            "message": {"runs": runs},
+                            "authorName": {"simpleText": author},
+                            "timestampUsec": "1700000000000000",
+                            "id": msg_id,
+                        }
+                    }
+                }
+            }],
+            "videoOffsetTimeMsec": str(offset_ms),
+        }
+    }, ensure_ascii=False)
+
+
+class TestYouTubeParsing(unittest.TestCase):
+    def parse(self, line, origin=None):
+        return sources._parse_live_chat_line(line, origin)
+
+    def test_plain_message(self):
+        msg = self.parse(text_item(125_500, "視聴者A", [{"text": "www"}]))
+        self.assertEqual(msg.offset, 125.5)
+        self.assertEqual(msg.author, "視聴者A")
+        self.assertEqual(msg.text, "www")
+        self.assertEqual(msg.kind, "text")
+
+    def test_emoji_runs_are_kept(self):
+        msg = self.parse(text_item(1000, "A", [
+            {"text": "かわいい"},
+            {"emoji": {"emojiId": "abc", "shortcuts": [":_kusa:"], "isCustomEmoji": True}},
+        ]))
+        self.assertEqual(msg.text, "かわいい:_kusa:")
+
+    def test_negative_offset_for_pre_stream_chat(self):
+        """配信開始前の待機所コメントは負のオフセットで来る。"""
+        msg = self.parse(text_item(-51966, "A", [{"text": "楽しみ"}]))
+        self.assertLess(msg.offset, 0)
+
+    def test_superchat(self):
+        line = json.dumps({
+            "replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatPaidMessageRenderer": {
+                        "message": {"runs": [{"text": "応援してます"}]},
+                        "authorName": {"simpleText": "支援者"},
+                        "purchaseAmountText": {"simpleText": "￥1,000"},
+                    }}}}],
+                "videoOffsetTimeMsec": "60000",
+            }
+        }, ensure_ascii=False)
+        msg = self.parse(line)
+        self.assertEqual(msg.kind, "paid")
+        self.assertEqual(msg.amount, "￥1,000")
+        self.assertEqual(msg.offset, 60.0)
+
+    def test_membership_without_message_body(self):
+        line = json.dumps({
+            "replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatMembershipItemRenderer": {
+                        "authorName": {"simpleText": "新メンバー"},
+                        "headerSubtext": {"runs": [{"text": "メンバーになりました"}]},
+                    }}}}],
+                "videoOffsetTimeMsec": "90000",
+            }
+        }, ensure_ascii=False)
+        msg = self.parse(line)
+        self.assertEqual(msg.kind, "member")
+        self.assertEqual(msg.text, "メンバーになりました")
+
+    def test_fallback_to_timestamp_when_offset_missing(self):
+        """videoOffsetTimeMsec が無い形式では、先頭からの相対時刻で補う。"""
+        line = json.dumps({
+            "actions": [{"addChatItemAction": {"item": {
+                "liveChatTextMessageRenderer": {
+                    "message": {"runs": [{"text": "草"}]},
+                    "authorName": {"simpleText": "A"},
+                    "timestampUsec": "1700000030000000",
+                }}}}]
+        }, ensure_ascii=False)
+        msg = self.parse(line, origin=1700000000000000)
+        self.assertEqual(msg.offset, 30.0)
+
+    def test_ignores_non_chat_lines(self):
+        self.assertIsNone(self.parse("こわれた行"))
+        self.assertIsNone(self.parse(json.dumps({"replayChatItemAction": {"actions": []}})))
+        self.assertIsNone(self.parse(json.dumps({
+            "replayChatItemAction": {
+                "actions": [{"markChatItemAsDeletedAction": {"targetItemId": "x"}}],
+                "videoOffsetTimeMsec": "1000"}})))
+
+    def test_error_messages_are_readable(self):
+        self.assertIn("メンバー限定", sources._ytdlp_error(["ERROR: Join this channel members-only"]))
+        self.assertIn("見つかりません", sources._ytdlp_error(["ERROR: Video unavailable"]))
+
+
+class TestTwitchParsing(unittest.TestCase):
+    def test_node_to_message(self):
+        node = {
+            "id": "c1",
+            "contentOffsetSeconds": 742,
+            "commenter": {"displayName": "viewer1"},
+            "message": {"fragments": [{"text": "LUL "}, {"text": "KEKW"}]},
+        }
+        msg = sources._node_to_message(node)
+        self.assertEqual(msg.offset, 742.0)
+        self.assertEqual(msg.author, "viewer1")
+        self.assertEqual(msg.text, "LUL KEKW")
+
+    def test_missing_commenter_is_tolerated(self):
+        """BAN済みユーザーなどは commenter が null で来ることがある。"""
+        msg = sources._node_to_message({"contentOffsetSeconds": 5, "commenter": None,
+                                        "message": {"fragments": [{"text": "hi"}]}})
+        self.assertEqual(msg.author, "")
+        self.assertEqual(msg.text, "hi")
+
+    def test_request_shapes(self):
+        first = sources._comment_request("123", offset=600)
+        self.assertEqual(first["variables"]["contentOffsetSeconds"], 600)
+        self.assertNotIn("cursor", first["variables"])
+        nxt = sources._comment_request("123", cursor="abc")
+        self.assertEqual(nxt["variables"]["cursor"], "abc")
+        self.assertNotIn("contentOffsetSeconds", nxt["variables"])
+        self.assertEqual(nxt["extensions"]["persistedQuery"]["sha256Hash"], sources._GQL_HASH)
+
+    def test_segment_paging_and_dedupe(self):
+        """ページングが進み、区間の外に出たら止まり、重複が除かれること。"""
+        pages = {
+            None: {"edges": [
+                {"cursor": "c1", "node": {"id": "a", "contentOffsetSeconds": 1,
+                                          "commenter": {"displayName": "u"},
+                                          "message": {"fragments": [{"text": "1"}]}}},
+                {"cursor": "c2", "node": {"id": "b", "contentOffsetSeconds": 2,
+                                          "commenter": {"displayName": "u"},
+                                          "message": {"fragments": [{"text": "2"}]}}},
+            ], "pageInfo": {"hasNextPage": True}},
+            "c2": {"edges": [
+                {"cursor": "c3", "node": {"id": "b", "contentOffsetSeconds": 2,
+                                          "commenter": {"displayName": "u"},
+                                          "message": {"fragments": [{"text": "2"}]}}},
+                {"cursor": "c4", "node": {"id": "c", "contentOffsetSeconds": 99,
+                                          "commenter": {"displayName": "u"},
+                                          "message": {"fragments": [{"text": "out"}]}}},
+            ], "pageInfo": {"hasNextPage": True}},
+        }
+        calls = []
+
+        def fake_post(payload, retries=4):
+            cursor = payload[0]["variables"].get("cursor")
+            calls.append(cursor)
+            return [{"data": {"video": {"comments": pages[cursor]}}}]
+
+        original = sources._gql_post
+        sources._gql_post = fake_post
+        try:
+            import threading
+            collected, seen = [], set()
+            sources._fetch_twitch_segment("1", 0, 50, seen, threading.Lock(),
+                                          collected, lambda _: None)
+        finally:
+            sources._gql_post = original
+
+        self.assertEqual(calls, [None, "c2"])
+        self.assertEqual([m.text for m in collected], ["1", "2"])   # 重複と区間外を除外
+
+    def test_missing_video_raises(self):
+        original = sources._gql_post
+        sources._gql_post = lambda payload, retries=4: [{"data": {"video": None}}]
+        try:
+            import threading
+            with self.assertRaises(FetchError):
+                sources._fetch_twitch_segment("1", 0, None, set(), threading.Lock(),
+                                              [], lambda _: None)
+        finally:
+            sources._gql_post = original
+
+
+class TestUrls(unittest.TestCase):
+    def test_youtube_forms(self):
+        for url in ["https://www.youtube.com/watch?v=abcdefghijk",
+                    "https://youtu.be/abcdefghijk?t=90",
+                    "https://www.youtube.com/live/abcdefghijk",
+                    "https://m.youtube.com/watch?app=desktop&v=abcdefghijk",
+                    "abcdefghijk"]:
+            self.assertEqual(parse_url(url), ("youtube", "abcdefghijk"), url)
+
+    def test_twitch_forms(self):
+        for url in ["https://www.twitch.tv/videos/123456789",
+                    "https://twitch.tv/someone/video/123456789",
+                    "https://www.twitch.tv/videos/123456789?t=1h2m3s"]:
+            self.assertEqual(parse_url(url), ("twitch", "123456789"), url)
+
+    def test_rejects_others(self):
+        for url in ["", "https://example.com/", "https://www.nicovideo.jp/watch/sm9"]:
+            with self.assertRaises(FetchError):
+                parse_url(url)
+
+    def test_time_url(self):
+        yt = sources.StreamInfo("youtube", "abcdefghijk", "u")
+        self.assertEqual(yt.time_url(3725.9), "https://www.youtube.com/watch?v=abcdefghijk&t=3725s")
+        tw = sources.StreamInfo("twitch", "123", "u")
+        self.assertEqual(tw.time_url(3725), "https://www.twitch.tv/videos/123?t=1h2m5s")
+        self.assertEqual(tw.time_url(-5), "https://www.twitch.tv/videos/123?t=0h0m0s")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
