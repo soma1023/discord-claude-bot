@@ -1,5 +1,11 @@
 __pycache__/
 *.pyc
+
+# 認証情報は一切コミットしない（.env.for-partner のような派生名も含めて塞ぐ）
 .env
+.env.*
+!.env.example
+
 logs/
+bot.log
 stream_highlight/cache/
