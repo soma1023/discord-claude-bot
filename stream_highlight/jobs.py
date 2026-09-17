@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """チャット取得をバックグラウンドで走らせ、進捗をUIに返す。"""
 
+import os
 import threading
 import time
 import traceback
@@ -156,8 +157,15 @@ class JobManager:
             job.message = "失敗しました"
         except Exception as exc:                      # noqa: BLE001
             traceback.print_exc()
+            # 発生箇所が分からないと報告を受けても直せないので、画面にも出す
+            frames = traceback.extract_tb(exc.__traceback__)
+            where = ""
+            if frames:
+                last = frames[-1]
+                where = " [%s:%d %s]" % (os.path.basename(last.filename),
+                                         last.lineno, last.name)
             job.status = "error"
-            job.error = "解析中に予期しないエラーが発生しました: %s" % exc
+            job.error = "解析中に予期しないエラーが発生しました: %s%s" % (exc, where)
             job.message = "失敗しました"
 
 

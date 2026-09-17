@@ -112,6 +112,75 @@ class TestYouTubeParsing(unittest.TestCase):
                 "actions": [{"markChatItemAsDeletedAction": {"targetItemId": "x"}}],
                 "videoOffsetTimeMsec": "1000"}})))
 
+    def test_survives_broken_shapes(self):
+        """実データで起きうる「入れ子がnull」に落とされないこと。"""
+        broken = [
+            "null",
+            "[]",
+            '"文字列だけ"',
+            json.dumps({"replayChatItemAction": None}),
+            json.dumps({"replayChatItemAction": {"actions": None}}),
+            json.dumps({"replayChatItemAction": {"actions": [None], "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {"actions": [{"addChatItemAction": None}],
+                                                 "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {"actions": [{"addChatItemAction": {"item": None}}],
+                                                 "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {"liveChatTextMessageRenderer": None}}}],
+                "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatTextMessageRenderer": {"message": None,
+                                                    "authorName": None}}}}],
+                "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatTextMessageRenderer": {"message": {"runs": None}}}}}],
+                "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatTextMessageRenderer": {"message": {"runs": [None, {"emoji": None},
+                                                                        {"text": None}]}}}}}],
+                "videoOffsetTimeMsec": "1000"}}),
+            json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {
+                    "liveChatTextMessageRenderer": {"message": {"runs": [{"text": "ok"}]}}}}}],
+                "videoOffsetTimeMsec": "こわれた値"}}),
+        ]
+        for line in broken:
+            self.parse(line)            # 例外を出さないこと自体が要件
+
+    def test_unknown_renderer_types_are_skipped(self):
+        """広告・アンケート・プレースホルダなど、発言以外の要素を無視すること。"""
+        for renderer in ("liveChatViewerEngagementMessageRenderer",
+                         "liveChatPlaceholderItemRenderer",
+                         "liveChatPollRenderer",
+                         "liveChatBannerRenderer"):
+            line = json.dumps({"replayChatItemAction": {
+                "actions": [{"addChatItemAction": {"item": {renderer: {"id": "x"}}}}],
+                "videoOffsetTimeMsec": "1000"}})
+            self.assertIsNone(self.parse(line), renderer)
+
+    def test_non_chat_action_types_are_skipped(self):
+        for action in ("markChatItemAsDeletedAction", "addLiveChatTickerItemAction",
+                       "replaceChatItemAction"):
+            line = json.dumps({"replayChatItemAction": {
+                "actions": [{action: {"id": "x"}}], "videoOffsetTimeMsec": "1000"}})
+            self.assertIsNone(self.parse(line), action)
+
+    def test_gift_author_from_header(self):
+        """ギフト告知は名前がheaderの中にあるので、そこから拾うこと。"""
+        line = json.dumps({"replayChatItemAction": {
+            "actions": [{"addChatItemAction": {"item": {
+                "liveChatSponsorshipsGiftPurchaseAnnouncementRenderer": {
+                    "header": {"liveChatSponsorshipsHeaderRenderer": {
+                        "authorName": {"simpleText": "太っ腹さん"},
+                        "primaryText": {"runs": [{"text": "5個ギフトしました"}]}}}}}}}],
+            "videoOffsetTimeMsec": "5000"}}, ensure_ascii=False)
+        msg = self.parse(line)
+        self.assertEqual(msg.author, "太っ腹さん")
+        self.assertEqual(msg.kind, "gift")
+
     def test_error_messages_are_readable(self):
         self.assertIn("メンバー限定", sources._ytdlp_error(["ERROR: Join this channel members-only"]))
         self.assertIn("見つかりません", sources._ytdlp_error(["ERROR: Video unavailable"]))

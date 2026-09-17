@@ -182,20 +182,34 @@ _RENDERER_KINDS = {
 
 
 def _runs_to_text(message):
-    """message.runs を文字列にする。絵文字は :shortcut: 形式で残す。"""
+    """message.runs を文字列にする。絵文字は :shortcut: 形式で残す。
+
+    実データでは想定した入れ子が null で来ることがあるので、
+    期待した型でなければ黙って読み飛ばす。
+    """
+    if not isinstance(message, dict):
+        return ""
+    runs = message.get("runs")
+    if not isinstance(runs, list):
+        return ""
     out = []
-    for run in (message or {}).get("runs", []):
-        if "text" in run:
-            out.append(run["text"])
-        elif "emoji" in run:
-            emoji = run["emoji"]
-            shortcuts = emoji.get("shortcuts") or []
-            if shortcuts:
-                out.append(shortcuts[0])
-            elif emoji.get("isCustomEmoji"):
-                out.append(":%s:" % (emoji.get("emojiId") or "emoji"))
-            else:
-                out.append(emoji.get("emojiId") or "")
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        text = run.get("text")
+        if isinstance(text, str):
+            out.append(text)
+            continue
+        emoji = run.get("emoji")
+        if not isinstance(emoji, dict):
+            continue
+        shortcuts = emoji.get("shortcuts")
+        if isinstance(shortcuts, list) and shortcuts:
+            out.append(str(shortcuts[0]))
+        elif emoji.get("isCustomEmoji"):
+            out.append(":%s:" % (emoji.get("emojiId") or "emoji"))
+        else:
+            out.append(str(emoji.get("emojiId") or ""))
     return "".join(out)
 
 
@@ -207,43 +221,79 @@ def _simple_text(node):
     return _runs_to_text(node)
 
 
+def _offset_seconds(renderer, offset_ms, fallback_origin):
+    """配信開始からの秒数を求める。取れなければ None。"""
+    if offset_ms is not None:
+        try:
+            return int(offset_ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    usec = renderer.get("timestampUsec")
+    if usec is None or fallback_origin is None:
+        return None
+    try:
+        return (int(usec) - fallback_origin) / 1_000_000.0
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_live_chat_line(line, fallback_origin):
-    """live_chat.json の1行から ChatMessage を作る。対象外の行は None。"""
+    """live_chat.json の1行から ChatMessage を作る。対象外の行は None。
+
+    実際のチャットログには、通常の発言のほかに広告・アンケート・削除通知・
+    プレースホルダなど多様な要素が混ざる。想定した入れ子が欠けていたり
+    null だったりするのは普通なので、形が違えば読み飛ばす。
+    """
     try:
         obj = json.loads(line)
     except json.JSONDecodeError:
         return None
+    if not isinstance(obj, dict):
+        return None
+
     replay = obj.get("replayChatItemAction")
-    if replay:
-        actions = replay.get("actions") or []
+    if isinstance(replay, dict):
+        actions = replay.get("actions")
         offset_ms = replay.get("videoOffsetTimeMsec")
     else:
-        actions = obj.get("actions") or []
+        actions = obj.get("actions")
+        offset_ms = None
+    if offset_ms is None:
         offset_ms = obj.get("videoOffsetTimeMsec")
+    if not isinstance(actions, list):
+        return None
 
     for action in actions:
-        item = (action.get("addChatItemAction") or {}).get("item")
-        if not item:
+        if not isinstance(action, dict):
+            continue
+        add = action.get("addChatItemAction")
+        item = add.get("item") if isinstance(add, dict) else None
+        if not isinstance(item, dict):
             continue
         for key, kind in _RENDERER_KINDS.items():
             renderer = item.get(key)
-            if not renderer:
+            if not isinstance(renderer, dict):
                 continue
-            if offset_ms is not None:
-                offset = int(offset_ms) / 1000.0
-            else:
-                usec = renderer.get("timestampUsec")
-                if usec is None or fallback_origin is None:
-                    return None
-                offset = (int(usec) - fallback_origin) / 1_000_000.0
+            offset = _offset_seconds(renderer, offset_ms, fallback_origin)
+            if offset is None:
+                return None
             text = _runs_to_text(renderer.get("message"))
             if not text and kind in ("sticker", "member", "gift"):
-                text = _simple_text(renderer.get("headerSubtext")) or _simple_text(
-                    renderer.get("headerPrimaryText")
-                )
+                text = (_simple_text(renderer.get("headerSubtext"))
+                        or _simple_text(renderer.get("headerPrimaryText")))
+            author = _simple_text(renderer.get("authorName"))
+            if not author:
+                # ギフト告知などは、名前が header の中に入っている
+                header = renderer.get("header")
+                if isinstance(header, dict):
+                    for sub in header.values():
+                        if isinstance(sub, dict):
+                            author = _simple_text(sub.get("authorName"))
+                            if author:
+                                break
             return ChatMessage(
                 offset=offset,
-                author=_simple_text(renderer.get("authorName")),
+                author=author,
                 text=text,
                 kind=kind,
                 amount=_simple_text(renderer.get("purchaseAmountText")),
@@ -326,11 +376,24 @@ def fetch_youtube_chat(url, progress=None):
             origin = _first_timestamp_usec(path)
 
         messages = []
+        broken = 0
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                msg = _parse_live_chat_line(line, origin)
+                if not line.strip():
+                    continue
+                try:
+                    msg = _parse_live_chat_line(line, origin)
+                except Exception:      # noqa: BLE001（1行の崩れで全体を落とさない）
+                    broken += 1
+                    continue
                 if msg is not None:
                     messages.append(msg)
+
+        if not messages:
+            raise FetchError(
+                "チャットは取得できましたが、コメントを1件も読み取れませんでした。\n"
+                "YouTube側の形式が変わった可能性があります（読み取れなかった行: %d）。" % broken
+            )
         messages.sort(key=lambda m: m.offset)
         return messages
     finally:
