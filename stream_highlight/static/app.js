@@ -932,6 +932,10 @@ async function loadHistory() {
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
+    if (caps.version) {
+      // サーバを再起動し忘れると画面だけ新しくなるので、動作中の版を出しておく
+      $("codeVersion").textContent = caps.version;
+    }
     if (!caps.ffmpeg) {
       $("audioInput").disabled = true;
       $("audioLabel").classList.add("disabled");

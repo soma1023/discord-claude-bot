@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from . import audio as audio_mod
 from . import cache
+from . import code_version
 from .analyze import Params, analyze, analyze_keyword
 from .jobs import manager
 from .sources import FetchError
@@ -92,7 +93,7 @@ def keyword(req: KeywordRequest):
 @app.get("/api/capabilities")
 def capabilities():
     """音声解析が使える環境かどうかを画面に伝える。"""
-    return {"ffmpeg": audio_mod.ffmpeg_available()}
+    return {"ffmpeg": audio_mod.ffmpeg_available(), "version": code_version()}
 
 
 @app.get("/api/history")
@@ -120,6 +121,7 @@ def main():
 
     url = "http://%s:%d/" % ("127.0.0.1" if args.host == "0.0.0.0" else args.host, args.port)
     print("配信ハイライト抽出ツール: %s" % url)
+    print("動作中のコード: %s" % code_version())
     if not args.no_browser:
         import threading
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
