@@ -166,7 +166,10 @@ def check_audio(platform, video_id):
 
     line()
     line("平常値の取り方による「跳ね」の出方:")
-    for q, label in ((0.5, "中央値"), (AUDIO_BASELINE_Q, "%.1f分位（現行）" % AUDIO_BASELINE_Q)):
+    choices = [(0.5, "中央値"), (0.8, "0.8分位"), (0.9, "0.9分位"), (0.95, "0.95分位")]
+    for q, label in choices:
+        if abs(q - AUDIO_BASELINE_Q) < 1e-9:
+            label += "（現行）"
         base = rolling_quantile(level, half, q=q)
         excess = [lv - bs for lv, bs in zip(level, base)]
         spread = max(mad(excess), 1.0)
