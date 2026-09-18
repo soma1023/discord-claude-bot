@@ -158,13 +158,16 @@ class TestAnalyze(unittest.TestCase):
         self.assertEqual(p.window_sec, 60)
 
     def test_rolling_quantile_picks_higher_level(self):
-        """高い分位点は、静かな時間に基準を引き下げられないこと。"""
-        # 半分が静か(-45)、半分がしゃべり(-25)という音量の並び
-        values = [-45.0 if i % 2 else -25.0 for i in range(400)]
+        """間や無音が多い配信で、基準がしゃべり側に残ること。
+
+        静かな時間が6割を占めると中央値はそちらに寄ってしまい、
+        普通にしゃべっているだけで「音量が上がった」ことになる。
+        """
+        values = [-45.0 if i % 5 < 3 else -25.0 for i in range(500)]   # 静か6割
         median = rolling_quantile(values, 100, q=0.5)
         high = rolling_quantile(values, 100, q=0.8)
-        self.assertLess(median[200], -30.0, "中央値は静かな時間に引っ張られる")
-        self.assertGreater(high[200], -30.0, "高い分位点はしゃべり側に寄るべき")
+        self.assertLess(median[250], -35.0, "中央値は静かな時間に引っ張られる")
+        self.assertGreater(high[250], -35.0, "高い分位点はしゃべり側に寄るべき")
 
     def test_rolling_quantile_bounds(self):
         values = [float(i) for i in range(101)]
