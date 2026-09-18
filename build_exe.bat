@@ -25,6 +25,8 @@ if errorlevel 1 goto FAIL
 REM 配布物でもバージョンが分かるように、コミットIDを埋め込む
 git rev-parse --short HEAD > stream_highlight\_build_id.txt 2>nul
 if errorlevel 1 echo unknown > stream_highlight\_build_id.txt
+set /p BUILT=<stream_highlight\_build_id.txt
+echo このコードでまとめます: %BUILT%
 
 echo.
 echo まとめています...
@@ -33,9 +35,13 @@ if errorlevel 1 goto FAIL
 
 echo.
 echo ============================================================
-echo  できあがりました。
+echo  できあがりました（コード: %BUILT%）
 echo.
 echo   %CD%\dist\StreamHighlight\StreamHighlight.exe
+echo.
+echo  ※ 以前に別の場所へコピーしていた場合は、そちらは古いままです。
+echo     この dist\StreamHighlight で置き換えてください。
+echo     アプリの「解析の設定」に出るコードが %BUILT% なら最新です。
 echo.
 echo  dist\StreamHighlight フォルダごとどこへ移してもそのまま動きます。
 echo  ショートカットをデスクトップに作っておくと楽です。
