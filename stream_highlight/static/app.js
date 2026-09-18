@@ -179,10 +179,8 @@ function applyResult(result) {
   state.view = { start: 0, end: result.stats.duration || 1 };
   (result.categories || []).forEach((c) => (CATEGORY_COLORS[c.id] = c.color));
   PAD.r = result.audio && result.audio.available ? 46 : 14;   // 右軸のラベル用
-  // 音声を解析したなら、わざわざ消すまでは重ねて見せる
-  if (result.audio && result.audio.available && !state.audioOverlayTouched) {
-    state.overlays.add(AUDIO_KEY);
-  }
+  // 音量は既定で非表示。重ねるとチャットの線が埋もれて、
+  // 肝心の盛り上がりが読めなくなるため。見たいときだけ「音量」を押す。
 
   // サーバ側で丸められた値をUIに戻す
   const p = result.params;
@@ -251,6 +249,12 @@ function renderAudioSummary(result) {
       `<br><span class="small">この配信は音量の変化が緩やかなようです。` +
       `「解析の設定」の<b>音量のしきい値</b>を下げると候補が増えます。` +
       `各候補に付く「声 +◯dB」のバッジはしきい値と無関係に出ます。</span>`;
+  } else if (!st.chat_too_sparse) {
+    box.innerHTML =
+      `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
+      `（<b>${st.rejected}</b>件を除外）。` +
+      `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。` +
+      `この結果は各候補の「声 +◯dB」バッジと、上の「音声も跳ねた候補だけ」の絞り込みに使っています。</span>`;
   } else if (st.chat_too_sparse) {
     // コメントがほとんど流れない配信では、照合しようにも材料がない
     box.innerHTML =
@@ -261,13 +265,6 @@ function renderAudioSummary(result) {
       `もともとコメントがほとんど流れない配信では成立しません。` +
       `音量の山はグラフのピンクの線で確認できます。` +
       `各候補の「声 +◯dB」バッジはそのまま使えます。</span>`;
-  } else {
-    box.innerHTML =
-      `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
-      `（<b>${st.rejected}</b>件を除外）。` +
-      `うち <b>${st.already_in_chat_list}</b>件はチャット側で既に拾えていたので、` +
-      `「音声」タブには残り <b>${result.audio_moments.length}</b>件を出しています。` +
-      `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。</span>`;
   }
   box.classList.remove("hidden");
   filter.classList.remove("hidden");
@@ -306,8 +303,6 @@ function renderTabs() {
     const list = state.result.category_moments[cat.id];
     if (list && list.length) items.push({ id: cat.id, label: `${cat.label} (${list.length})` });
   });
-  const audioList = state.result.audio_moments || [];
-  if (audioList.length) items.push({ id: "audio", label: `音声 (${audioList.length})` });
   if (state.keyword) items.push({ id: "keyword", label: `「${state.keyword.keyword}」` });
 
   items.forEach((item) => {
@@ -322,7 +317,6 @@ function renderTabs() {
 function momentsForTab(tab) {
   if (!state.result) return [];
   if (tab === "all") return state.result.moments;
-  if (tab === "audio") return state.result.audio_moments || [];
   if (tab === "keyword") return state.keyword ? state.keyword.moments : [];
   return state.result.category_moments[tab] || [];
 }
