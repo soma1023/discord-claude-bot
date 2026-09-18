@@ -116,8 +116,13 @@ python -m stream_highlight.diagnose <VODのURL>
 
 `build_exe.bat` で `dist\StreamHighlight\` に一式ができる。
 Python も git も不要で、フォルダごと移動できる。
+コンソールは出さず、終了は画面右上の「終了」ボタンから。
+二重起動すると、新しく立ち上げずブラウザを開くだけにしている。
+うまく動かないときは `data\app.log` を見る。
+
 Linux上でビルドして通しで動作確認済み（起動・画面・解析・ワード検索・
-yt-dlpの自己呼び出し）。**Windowsでのビルドは未実施。**
+yt-dlpの自己呼び出し・終了ボタン・二重起動の回避）。
+**Windowsでのビルドと、コンソール非表示の挙動は未検証。**
 
 ## 手元での動かし方
 

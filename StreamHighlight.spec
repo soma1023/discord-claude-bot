@@ -41,7 +41,9 @@ exe = EXE(
     debug=False,
     strip=False,
     upx=False,
-    console=True,          # URLとエラーが見えるように、コンソールは出す
+    # コンソールは出さない。終了は画面の「終了」ボタンから行う。
+    # 出力は保存先フォルダの app.log に残るので、失敗したときはそれを見る。
+    console=False,
 )
 coll = COLLECT(
     exe,

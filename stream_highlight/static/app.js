@@ -831,6 +831,26 @@ function syncOutputs() {
   $(id).addEventListener("input", syncOutputs);
 });
 
+$("quitBtn").onclick = async () => {
+  if (!window.confirm("アプリを終了します。よろしいですか？")) return;
+  try {
+    const result = await api("/api/quit", { method: "POST" });
+    if (!result.stopped) {
+      showError(result.reason || "終了できませんでした。");
+      return;
+    }
+  } catch (err) {
+    /* 応答を返す前に止まることがあるので、失敗しても終了扱いにする */
+  }
+  const screen = document.createElement("div");
+  screen.className = "farewell";
+  screen.innerHTML =
+    "<b>終了しました</b>" +
+    '<span class="muted">このタブは閉じて構いません。' +
+    "<br>もう一度使うときは StreamHighlight.exe を起動してください。</span>";
+  document.body.appendChild(screen);
+};
+
 $("urlForm").onsubmit = (ev) => {
   ev.preventDefault();
   const url = $("urlInput").value.trim();

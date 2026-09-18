@@ -76,6 +76,15 @@ button.ghost {
 }
 button.ghost:hover { color: var(--text); border-color: var(--accent); }
 
+#quitBtn { margin-left: auto; }
+#quitBtn:hover { color: var(--danger); border-color: var(--danger); }
+.farewell {
+  position: fixed; inset: 0; z-index: 80; background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 10px; text-align: center; padding: 20px;
+}
+.farewell b { font-size: 16px; }
+
 .checkbox { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; white-space: nowrap; }
 .checkbox.disabled { opacity: 0.4; cursor: not-allowed; }
 

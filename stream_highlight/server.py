@@ -85,6 +85,20 @@ def keyword(req: KeywordRequest):
     return analyze_keyword(messages, info, word, Params.from_dict(req.params))
 
 
+@app.post("/api/quit")
+def quit_app():
+    """画面の「終了」ボタンから、サーバを止める。
+
+    コンソールを出さない設定では、ウィンドウを閉じて終わらせることが
+    できないため、終了手段を画面側に用意している。
+    """
+    server = getattr(app.state, "server", None)
+    if server is None:
+        return {"stopped": False, "reason": "開発用の起動方法では終了できません。"}
+    server.should_exit = True
+    return {"stopped": True}
+
+
 @app.get("/api/capabilities")
 def capabilities():
     """動作中のコードを画面に伝える。"""
@@ -104,6 +118,23 @@ def delete_history(platform: str, video_id: str):
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+def _already_running(host, port):
+    """同じアプリが既に動いていないか確かめる。
+
+    二重起動すると「ポートが使用中」で落ちるだけで分かりにくいので、
+    動いていれば新しく立ち上げず、そのブラウザを開くだけにする。
+    """
+    import json
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open("http://%s:%d/api/capabilities" % (host, port), timeout=1.5) as resp:
+            return "version" in json.loads(resp.read().decode("utf-8"))
+    except Exception:      # noqa: BLE001（繋がらない＝動いていない）
+        return False
+
+
 def main():
     import argparse
     import uvicorn
@@ -114,14 +145,27 @@ def main():
     parser.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     args = parser.parse_args()
 
-    url = "http://%s:%d/" % ("127.0.0.1" if args.host == "0.0.0.0" else args.host, args.port)
+    shown_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    url = "http://%s:%d/" % (shown_host, args.port)
+
+    if _already_running(shown_host, args.port):
+        print("すでに起動しています: %s" % url, flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+
     print("配信ハイライト抽出ツール: %s" % url, flush=True)
     print("動作中のコード: %s" % code_version(), flush=True)
     print("保存先: %s" % paths.data_dir(), flush=True)
     if not args.no_browser:
         import threading
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="warning")
+    server = uvicorn.Server(config)
+    app.state.server = server      # 「終了」ボタンから止められるようにする
+    server.run()
+    print("終了しました。", flush=True)
 
 
 if __name__ == "__main__":
