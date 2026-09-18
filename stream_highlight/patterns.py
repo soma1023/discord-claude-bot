@@ -22,6 +22,38 @@ def normalize(text):
 
 
 # カテゴリ定義。patterns は normalize() 済みの文字列に対して当てる。
+# 配信サービスが出すシステム通知。本人の発言ではないので見せ場から外す。
+# 取得時ではなく解析時に判定するので、保存済みのチャットにも後から効く。
+SYSTEM_NOTICE = re.compile(
+    r"subscribed with Prime"
+    r"|subscribed at Tier \d"
+    r"|(?:T|t)hey've subscribed for \d+ month"
+    r"|is continuing the Gift Sub"
+    r"|gifted a Tier \d+ Sub"
+    r"|is gifting \d+ Tier \d+ Sub"
+    r"|watched \d+ consecutive stream"
+    r"|sparked a watch streak"
+    r"|\d+ raiders? from"
+    r"|converted from a Prime Sub",
+    re.IGNORECASE,
+)
+
+
+def split_notice(text):
+    """システム通知と、本人が書いたコメントを切り分ける。
+
+    通知のあとに本人のひとことが続くことがある
+    （例: 「... 43 months! ajak0nHi」の末尾）。その部分は本物なので残す。
+    戻り値は (本人のコメント, 通知だったか)。
+    """
+    found = SYSTEM_NOTICE.search(text or "")
+    if not found:
+        return text, False
+    tail = text[found.end():]
+    mark = tail.find("!")
+    return (tail[mark + 1:].strip() if mark >= 0 else ""), True
+
+
 CATEGORIES = [
     {
         "id": "laugh",

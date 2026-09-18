@@ -242,7 +242,14 @@ function renderAudioSummary(result) {
     return;
   }
   const st = audio.stats;
-  if (st.chat_too_sparse) {
+  if (!st.raw_peaks) {
+    // 音量の変化が緩やかな配信では、跳ねた箇所が無いのが正しい答えになる
+    box.innerHTML =
+      `<b>音量が大きく跳ねた箇所は見つかりませんでした。</b>` +
+      `<br><span class="small">この配信は音量の変化が緩やかなようです。` +
+      `「解析の設定」の<b>音量のしきい値</b>を下げると候補が増えます。` +
+      `各候補に付く「声 +◯dB」のバッジはしきい値と無関係に出ます。</span>`;
+  } else if (st.chat_too_sparse) {
     // コメントがほとんど流れない配信では、照合しようにも材料がない
     box.innerHTML =
       `音量が跳ねた箇所を <b>${st.raw_peaks}</b>件 見つけました。` +
@@ -523,7 +530,10 @@ function draw() {
   });
   const audioOn = state.overlays.has(AUDIO_KEY) &&
                   state.result.audio && state.result.audio.available;
-  const audioCols = audioOn ? columns(state.result.audio.excess, bin) : null;
+  // 平常より小さい時間は見たいものではないので、0で止めて山だけを残す
+  const audioCols = audioOn
+    ? columns(state.result.audio.excess, bin).map((v) => Math.max(0, v))
+    : null;
   if (state.tab === "keyword" && state.keyword && state.keyword.series.length) {
     overlays.push({ color: "#ffd866", cols: columns(state.keyword.series, state.keyword.bin_sec) });
   }
@@ -621,13 +631,11 @@ function draw() {
   // 音量（平常からの差・dB）。コメント数とは単位が違うので右側の軸に振る
   if (audioOn) {
     let aMax = 6;
-    let aMin = 0;
     audioCols.forEach((v) => {
       if (v > aMax) aMax = v;
-      if (v < aMin) aMin = v;
     });
     aMax = niceMax(aMax);
-    aMin = Math.min(-3, Math.floor(aMin));
+    const aMin = 0;
     const yAudio = (v) => PAD.t + plot.h - ((v - aMin) / (aMax - aMin)) * plot.h;
 
     ctx.strokeStyle = "rgba(219,97,162,0.35)";

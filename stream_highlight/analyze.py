@@ -17,7 +17,8 @@ import math
 from collections import Counter
 from dataclasses import dataclass, asdict
 
-from .patterns import CATEGORIES, CATEGORY_IDS, CATEGORY_LABELS, classify, normalize
+from .patterns import (CATEGORIES, CATEGORY_IDS, CATEGORY_LABELS, classify,
+                       normalize, split_notice)
 
 
 @dataclass
@@ -212,10 +213,17 @@ class Timeline:
         # 盛り上がりの判定にも代表コメントにも使わない。
         self.buckets = [[] for _ in range(self.n)]
         self.skipped_system = 0
+        # 通知の判定はここで行う。取得時にやると、保存済みチャットに
+        # 後からルールを足しても効かなくなるため。
+        self.body = []
+        for msg in messages:
+            text, is_notice = split_notice(msg.text)
+            self.body.append(text if is_notice else msg.text)
+
         for idx, msg in enumerate(messages):
             if msg.offset < 0:
                 continue          # 配信開始前の待機チャットは無視する
-            if msg.kind == "system":
+            if msg.kind == "system" or not self.body[idx].strip():
                 self.skipped_system += 1
                 continue
             b = int(msg.offset // self.bin_sec)
@@ -223,7 +231,7 @@ class Timeline:
                 self.buckets[b].append(idx)
 
         # コメント正規化とカテゴリ判定は1回だけ
-        self.normalized = [normalize(m.text) for m in messages]
+        self.normalized = [normalize(t) for t in self.body]
         self.categories = [classify(t) for t in self.normalized]
 
         self.half_window = max(0, int(round(params.window_sec / self.bin_sec)) // 2)
@@ -352,9 +360,15 @@ class AudioTrack:
         # 「普段しゃべっているときの音量」を基準にしたいので高めの分位点を取る。
         self.baseline = rolling_quantile(self.level, timeline.half_baseline,
                                          q=AUDIO_BASELINE_Q)
-        self.excess = [lv - bs for lv, bs in zip(self.level, self.baseline)]
+        raw = [lv - bs for lv, bs in zip(self.level, self.baseline)]
+
+        # 基準に高い分位点を使うと raw の中心は0ではなくマイナス側に寄る。
+        # そのままスコアにすると分位点の取り方でしきい値の意味が変わってしまうので、
+        # 全体の中央値を基準点にして「普段よりどれだけ大きいか」に直す。
+        center = _median(sorted(raw))
+        self.excess = [e - center for e in raw]
         # 1dB未満のばらつきしかない音源でスコアが暴れないよう下限を置く
-        self.spread = max(mad(self.excess), 1.0)
+        self.spread = max(mad(raw), 1.0)
         self.z = [e / self.spread for e in self.excess]
         self.lag_bins = max(1, int(round(params.chat_lag_sec / self.bin_sec)))
 
@@ -432,7 +446,7 @@ def _top_comments(timeline, idxs, limit=5):
             continue
         slot = groups.setdefault(key, {"count": 0, "forms": Counter()})
         slot["count"] += 1
-        slot["forms"][timeline.messages[i].text] += 1
+        slot["forms"][timeline.body[i]] += 1
     ranked = sorted(groups.values(), key=lambda g: g["count"], reverse=True)
     return [
         {"text": g["forms"].most_common(1)[0][0], "count": g["count"]}
@@ -484,7 +498,7 @@ def _build_moment(timeline, info, peak, z, density, baseline, min_z):
             {
                 "t": round(timeline.messages[i].offset, 1),
                 "author": timeline.messages[i].author,
-                "text": timeline.messages[i].text,
+                "text": timeline.body[i],
             }
             for i in idxs[:: max(1, len(idxs) // 8)][:8]
         ],
@@ -573,7 +587,8 @@ def analyze(messages, info, params=None, max_points=1800, loudness=None):
             "excess": _downsample(track.excess, step_a),
         }
 
-    counted = [m for m in messages if m.offset >= 0 and m.kind != "system"]
+    counted = [m for i, m in enumerate(messages)
+               if m.offset >= 0 and m.kind != "system" and timeline.body[i].strip()]
     total = len(counted)
     stats = {
         "messages": total,

@@ -139,6 +139,28 @@ class TestAnalyze(unittest.TestCase):
         self.assertEqual(result["stats"]["messages"],
                          len([m for m in messages if m.kind != "system"]))
 
+    def test_notices_in_cached_chat_are_excluded(self):
+        """保存済みチャットでも通知を除外できること。
+
+        通知の除去を取得時に行うと、保存済みのデータには後から効かない。
+        判定は解析時に行う必要がある（kind は text のまま届く）。
+        """
+        messages = list(self.messages)
+        for i in range(40):
+            messages.append(ChatMessage(
+                4000 + i * 0.4, "u%d" % i,
+                "でいじ subscribed with Prime. They've subscribed for 43 months!"))
+        # 通知に添えられた本人のひとことは残す
+        messages.append(ChatMessage(
+            4010.0, "x",
+            "まじょ_ subscribed at Tier 1. They've subscribed for 13 months! ajak0nHi"))
+        messages.sort(key=lambda m: m.offset)
+
+        result = analyze(messages, INFO, Params())
+        self.assertEqual(result["stats"]["system_notices"], 40)
+        self.assertFalse(any(abs(m["peak_sec"] - 4000) <= 40 for m in result["moments"]),
+                         "保存済みの通知を見せ場にしている")
+
     def test_no_messages(self):
         result = analyze([], INFO, Params())
         self.assertEqual(result["moments"], [])
