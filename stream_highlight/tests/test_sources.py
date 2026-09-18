@@ -245,7 +245,7 @@ class TestTwitchParsing(unittest.TestCase):
         }
         calls = []
 
-        def fake_post(payload, retries=4):
+        def fake_post(payload, retries=4, **kwargs):
             cursor = payload[0]["variables"].get("cursor")
             calls.append(cursor)
             return [{"data": {"video": {"comments": pages[cursor]}}}]
@@ -267,7 +267,7 @@ class TestTwitchParsing(unittest.TestCase):
         """comments が null でも落ちず、理由の分かるエラーになること。"""
         import threading
         original = sources._gql_post
-        sources._gql_post = lambda payload, retries=4: [
+        sources._gql_post = lambda payload, retries=4, **kw: [
             {"data": {"video": {"id": "1", "comments": None}}}]
         failures = []
         try:
@@ -298,12 +298,11 @@ class TestTwitchParsing(unittest.TestCase):
 
     def test_partial_failure_keeps_what_was_collected(self):
         """一部の区間が取れなくても、取れた分は返すこと。"""
-        import threading
         calls = {"n": 0}
 
-        def flaky(payload, retries=4):
+        def flaky(payload, retries=4, **kwargs):
             calls["n"] += 1
-            if calls["n"] == 1:
+            if calls["n"] <= 2:      # 1回目は接続確認、2回目が実際の取得
                 return [{"data": {"video": {"comments": {
                     "edges": [{"cursor": "c1", "node": {
                         "id": "a", "contentOffsetSeconds": 1,
@@ -320,9 +319,64 @@ class TestTwitchParsing(unittest.TestCase):
             sources._gql_post = original
         self.assertEqual([m.text for m in messages], ["残るコメント"])
 
+    def test_probe_falls_back_to_second_client_id(self):
+        """1つ目のClient-IDが弾かれたら、2つ目で取りに行くこと。"""
+        used = []
+
+        def by_client(payload, retries=4, client_id=None, **kwargs):
+            used.append(client_id)
+            if client_id == sources._GQL_CLIENT_IDS[0]:
+                return [{"errors": [{"message": "failed integrity check"}]}]
+            return [{"data": {"video": {"comments": {"edges": [], "pageInfo": {}}}}}]
+
+        original = sources._gql_post
+        sources._gql_post = by_client
+        try:
+            chosen = sources.probe_twitch("1")
+        finally:
+            sources._gql_post = original
+        self.assertEqual(chosen, sources._GQL_CLIENT_IDS[1])
+        self.assertEqual(used, list(sources._GQL_CLIENT_IDS))
+
+    def test_probe_reports_every_client_id_that_failed(self):
+        """全部だめなら、どのIDがどう失敗したかを添えて知らせること。"""
+        original = sources._gql_post
+        sources._gql_post = lambda payload, retries=4, **kw: [
+            {"errors": [{"message": "failed integrity check"}]}]
+        try:
+            with self.assertRaises(FetchError) as ctx:
+                sources.probe_twitch("1")
+        finally:
+            sources._gql_post = original
+        detail = str(ctx.exception)
+        self.assertIn("failed integrity check", detail)
+        for client_id in sources._GQL_CLIENT_IDS:
+            self.assertIn(client_id[:10], detail)
+
+    def test_request_headers_match_twitch_client(self):
+        """Twitch自身のクライアントと同じヘッダーで投げていること。"""
+        import urllib.request
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["headers"] = dict(req.header_items())
+            raise urllib.error.URLError("停止")
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(FetchError):
+                sources._gql_post([{"operationName": "x"}], retries=1)
+        finally:
+            urllib.request.urlopen = original
+        headers = {k.lower(): v for k, v in captured["headers"].items()}
+        self.assertEqual(headers["Content-type".lower()], "text/plain;charset=UTF-8")
+        self.assertEqual(headers["Client-id".lower()], sources._GQL_CLIENT_IDS[0])
+        self.assertIn("twitch.tv", headers["Origin".lower()])
+
     def test_all_segments_empty_raises_with_reason(self):
         original = sources._gql_post
-        sources._gql_post = lambda payload, retries=4: [
+        sources._gql_post = lambda payload, retries=4, **kw: [
             {"errors": [{"message": "failed integrity check"}]}]
         try:
             with self.assertRaises(FetchError) as ctx:
@@ -334,7 +388,7 @@ class TestTwitchParsing(unittest.TestCase):
     def test_missing_video_is_reported(self):
         import threading
         original = sources._gql_post
-        sources._gql_post = lambda payload, retries=4: [{"data": {"video": None}}]
+        sources._gql_post = lambda payload, retries=4, **kw: [{"data": {"video": None}}]
         failures = []
         try:
             sources._fetch_twitch_segment("1", 0, None, set(), threading.Lock(),

@@ -1,6 +1,6 @@
 # 作業状況メモ
 
-最終更新: 2026-09-17 / ブランチ `claude/stream-highlight-extractor-lzeupt`
+最終更新: 2026-09-18 / ブランチ `claude/stream-highlight-extractor-lzeupt`
 
 再開するときは、まずこのファイルを読めば続きから進められる。
 
@@ -34,26 +34,38 @@ Discordボットとは無関係で、`bot.py` は1行も変更していない。
 
 ## 次にやること
 
-1. **YouTubeのアーカイブ（チャットリプレイあり）で試す。** まだ一度も成功していない。
+1. **TwitchのVODで試す**（利用者のメイン用途）。失敗したら診断コマンドの出力を見る。
+2. YouTubeのアーカイブでも試す。まだ一度も成功していない。
    「音声も解析」はオフのまま試すのが早い。
-2. **Twitchの失敗理由を確認する。** 下記の未解決問題。
 
 ## 未解決の問題
 
-### Twitchが comments を null で返す
+### Twitchが comments を null で返す（対策済み・実機未確認）
 
 実機で `data.video.comments` が null になり取得できなかった。
-落ちないようにし、理由を画面に出すようにしたが、**根本原因は未特定**。
 
-考えられる原因:
+**最有力の原因**: Client-ID が古かった。
+手元の yt-dlp（2026.08.19）のTwitch実装を読んだところ、
+`kimne78kx3ncx6brgo4mv6wki5h1ko`（旧Web版）ではなく
+`ue6666qo983tsx6so1t0vnawi233wa` を使っており、
+Content-Type も `application/json` ではなく `text/plain;charset=UTF-8` だった。
+旧IDは整合性チェックで弾かれている可能性が高い。
 
-- 並列アクセスによるレート制限 → 並列数を8から3に下げて様子見中
-- persisted query のハッシュが古い → その場合は errors に `PersistedQueryNotFound` が出る
-- サブスク限定・削除済みVOD
-- Twitch側の一時的な混雑
+対策として入れたもの:
 
-次に失敗したときは画面に「Twitchがエラーを返しました: ○○」と具体的な理由が出るので、
-その文言を手がかりに切り分ける。errors の内容が決め手になる。
+- Client-ID を2つ用意し、実際に通るほうを実行時に選ぶ
+- ヘッダーをTwitch自身のクライアントに合わせる（Content-Type / Origin / Referer）
+- 並列取得の前に単発リクエストで疎通を確認する
+- 並列数を8から3に下げ、分割は30分以上のVODのみ
+
+**まだ実機で確認できていない。** 次に失敗したときは診断コマンドを使う:
+
+```
+python -m stream_highlight.diagnose <VODのURL>
+```
+
+どのClient-IDが何を返したかが出る。失敗時は生の応答が
+`twitch_debug.json` に保存されるので、その中身が決め手になる。
 
 ## 直したバグ（実機で判明したもの）
 

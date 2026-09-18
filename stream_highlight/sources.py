@@ -403,21 +403,38 @@ def fetch_youtube_chat(url, progress=None):
 # ---------------------------------------------------------------- Twitch
 
 _GQL_URL = "https://gql.twitch.tv/gql"
-_GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"   # Twitch Web が公開している値
+
+# Twitchは Client-ID によって整合性チェックの扱いが変わる。
+# 1つ目は yt-dlp が現在使っている値、2つ目は旧Web版の値。
+# 旧IDは弾かれることがあるので、実際に通るものを実行時に選ぶ。
+_GQL_CLIENT_IDS = (
+    "ue6666qo983tsx6so1t0vnawi233wa",
+    "kimne78kx3ncx6brgo4mv6wki5h1ko",
+)
 _GQL_HASH = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a"
 _NULL_RETRY_WAIT = 1.5      # 空応答の再試行間隔（テストでは0にする）
 
+# 失敗したときに生の応答を残す場所。原因究明の手がかりになる。
+DEBUG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "twitch_debug.json")
 
-def _gql_post(payload, retries=4):
+
+def _gql_post(payload, retries=4, client_id=None):
     body = json.dumps(payload).encode("utf-8")
     last = None
     for attempt in range(retries):
         req = urllib.request.Request(
             _GQL_URL, data=body,
             headers={
-                "Client-ID": _GQL_CLIENT_ID,
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (stream-highlight)",
+                "Client-ID": client_id or _GQL_CLIENT_IDS[0],
+                # Twitch自身のクライアントと同じ指定にする。
+                # application/json にすると扱いが変わることがある。
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Accept": "*/*",
+                "Origin": "https://www.twitch.tv",
+                "Referer": "https://www.twitch.tv/",
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/126.0.0.0 Safari/537.36"),
             },
         )
         try:
@@ -493,7 +510,7 @@ def _extract_comments(payload):
 
 
 def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advance,
-                          failures=None):
+                          failures=None, client_id=None):
     """[start, end) 区間のコメントをページングで集める。
 
     取得できなかった区間があっても、他の区間で取れた分は捨てない。
@@ -506,7 +523,8 @@ def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advanc
         comments = None
         reason = None
         for attempt in range(3):
-            payload = _gql_post([_comment_request(video_id, offset=offset, cursor=cursor)])
+            payload = _gql_post([_comment_request(video_id, offset=offset, cursor=cursor)],
+                                client_id=client_id)
             comments, reason = _extract_comments(payload)
             if comments is not None:
                 break
@@ -544,12 +562,49 @@ def _fetch_twitch_segment(video_id, start, end, seen, lock, collected, on_advanc
         offset = None
 
 
+def _save_debug(payload):
+    """失敗したときの生の応答を残す。次の調査の手がかりにする。"""
+    try:
+        with open(DEBUG_PATH, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        return DEBUG_PATH
+    except OSError:
+        return None
+
+
+def probe_twitch(video_id):
+    """使える Client-ID を1回のリクエストで見つける。
+
+    いきなり並列で取りに行くと、弾かれたのか混んでいるのか分からなくなる。
+    先に単発で確かめてから本番の取得に入る。
+    """
+    reasons = []
+    last_payload = None
+    for client_id in _GQL_CLIENT_IDS:
+        payload = _gql_post([_comment_request(video_id, offset=0)], client_id=client_id)
+        last_payload = payload
+        comments, reason = _extract_comments(payload)
+        if comments is not None:
+            return client_id
+        reasons.append("Client-ID %s… → %s" % (client_id[:10], reason))
+
+    saved = _save_debug(last_payload)
+    detail = "\n".join(reasons)
+    if saved:
+        detail += "\n\n応答の内容を %s に保存しました。" % saved
+    raise FetchError("Twitchからチャットを取得できませんでした。\n" + detail)
+
+
 def fetch_twitch_chat(video_id, duration=0, progress=None, workers=3):
     """TwitchのVODコメントを取得する。長い配信は区間分割して並列に取る。"""
     seen = set()
     collected = []
     lock = threading.Lock()
     duration = float(duration or 0)
+
+    if progress:
+        progress("Twitchへの接続を確認中…", 0.01)
+    client_id = probe_twitch(video_id)
 
     done = {"sec": 0.0}
 
@@ -580,7 +635,7 @@ def fetch_twitch_chat(video_id, duration=0, progress=None, workers=3):
 
     if segments == 1:
         _fetch_twitch_segment(video_id, 0, None, seen, lock, collected,
-                              make_advance(duration or 1e9), failures)
+                              make_advance(duration or 1e9), failures, client_id)
     else:
         seg_len = duration / segments
         bounds = [(i * seg_len, (i + 1) * seg_len if i < segments - 1 else None)
@@ -588,7 +643,8 @@ def fetch_twitch_chat(video_id, duration=0, progress=None, workers=3):
         with ThreadPoolExecutor(max_workers=segments) as pool:
             futures = [
                 pool.submit(_fetch_twitch_segment, video_id, start, end,
-                            seen, lock, collected, make_advance(seg_len), failures)
+                            seen, lock, collected, make_advance(seg_len),
+                            failures, client_id)
                 for start, end in bounds
             ]
             for fut in futures:

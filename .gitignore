@@ -9,3 +9,5 @@ __pycache__/
 logs/
 bot.log
 stream_highlight/cache/
+stream_highlight/twitch_debug.json
+install_error.log
