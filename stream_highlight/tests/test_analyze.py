@@ -124,6 +124,20 @@ class TestAnalyze(unittest.TestCase):
         self.assertEqual(result["moments"], [])
         self.assertIn("少ない", result["notice"])
 
+    def test_system_notices_do_not_become_moments(self):
+        """サブスク告知が集中しても、見せ場として拾わないこと。"""
+        messages = list(self.messages)
+        for i in range(40):
+            messages.append(ChatMessage(4000 + i * 0.4, "sub%d" % i, "", kind="system"))
+        messages.sort(key=lambda m: m.offset)
+        result = analyze(messages, INFO, Params())
+        self.assertEqual(result["stats"]["system_notices"], 40)
+        self.assertFalse(any(abs(m["peak_sec"] - 4000) <= 30 for m in result["moments"]),
+                         "システム通知を見せ場にしている")
+        # 件数にも数えない
+        self.assertEqual(result["stats"]["messages"],
+                         len([m for m in messages if m.kind != "system"]))
+
     def test_no_messages(self):
         result = analyze([], INFO, Params())
         self.assertEqual(result["moments"], [])
@@ -153,6 +167,16 @@ class TestPatterns(unittest.TestCase):
     def test_laugh_variants(self):
         for text in ["wwwww", "ｗｗｗｗ", "草", "大草原", "まじかwww", "LUL", "lmao"]:
             self.assertIn("laugh", classify(normalize(text)), text)
+
+    def test_twitch_channel_emotes(self):
+        """Twitchのチャンネル絵文字（○○Www 形式）も草として扱うこと。"""
+        for text in ["ajak0nWww", "kawaiiWWW", "hogeLUL", "fugaKEKW", "pepeLaugh"]:
+            self.assertIn("laugh", classify(normalize(text)), text)
+
+    def test_emote_without_laugh_marker(self):
+        """笑いと無関係な絵文字まで草にしないこと。"""
+        for text in ["ajak0nTe3", "ajak0nHi", "PogChamp", "catJAM"]:
+            self.assertNotIn("laugh", classify(normalize(text)), text)
 
     def test_url_is_not_laugh(self):
         self.assertNotIn("laugh", classify(normalize("http://www.example.com")))

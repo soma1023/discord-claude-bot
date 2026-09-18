@@ -463,16 +463,52 @@ def _comment_request(video_id, offset=None, cursor=None):
     }
 
 
+# Twitchのシステム通知。サブスク・ギフト・視聴連続記録・レイドなど。
+# 本人が書いたコメントではないので、盛り上がりの判定からは外す。
+_TWITCH_NOTICE = re.compile(
+    r"subscribed with Prime"
+    r"|subscribed at Tier \d"
+    r"|(?:T|t)hey've subscribed for \d+ month"
+    r"|is continuing the Gift Sub"
+    r"|gifted a Tier \d+ Sub"
+    r"|is gifting \d+ Tier \d+ Sub"
+    r"|watched \d+ consecutive stream"
+    r"|sparked a watch streak"
+    r"|\d+ raiders? from"
+    r"|converted from a Prime Sub"
+)
+
+
+def _split_twitch_notice(text):
+    """システム通知と、本人が書いたコメントを切り分ける。
+
+    通知は「○○ subscribed with Prime. They've subscribed for 43 months!」の形で、
+    そのあとに本人のひとことが続くことがある（例: 末尾の「ajak0nHi」）。
+    その部分は本物のコメントなので残す。
+
+    戻り値は (本人のコメント, 通知だったか)。
+    """
+    found = _TWITCH_NOTICE.search(text)
+    if not found:
+        return text, False
+    tail = text[found.end():]
+    mark = tail.find("!")
+    remainder = tail[mark + 1:].strip() if mark >= 0 else ""
+    return remainder, True
+
+
 def _node_to_message(node):
     message = node.get("message") or {}
     fragments = message.get("fragments") or []
     text = "".join(f.get("text") or "" for f in fragments)
     commenter = node.get("commenter") or {}
+    body, is_notice = _split_twitch_notice(text)
     return ChatMessage(
         offset=float(node.get("contentOffsetSeconds") or 0),
         author=commenter.get("displayName") or commenter.get("login") or "",
-        text=text,
-        kind="text",
+        text=body if is_notice else text,
+        # 通知に添えられた本人のひとことは普通のコメントとして扱う
+        kind="system" if (is_notice and not body) else "text",
     )
 
 

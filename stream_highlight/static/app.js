@@ -223,6 +223,7 @@ function renderVideo(result) {
     `平均 <b>${s.per_minute}</b>コメ/分`,
     `参加 <b>${num(s.authors)}</b>人`,
     s.superchats ? `スパチャ <b>${num(s.superchats)}</b>件` : "",
+    s.system_notices ? `<span title="サブスク告知などは見せ場の判定から除いています">通知 <b>${num(s.system_notices)}</b>件を除外</span>` : "",
     `候補 <b>${result.moments.length}</b>件`,
   ].filter(Boolean).map((text) => `<span>${text}</span>`).join("");
 

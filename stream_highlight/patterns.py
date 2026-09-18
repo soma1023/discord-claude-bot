@@ -28,11 +28,14 @@ CATEGORIES = [
         "label": "草",
         "color": "#7ee787",
         "patterns": [
-            r"(?<![a-z0-9.])w{2,}(?![a-z0-9.])",   # www / ｗｗｗ（URLのwwwは除外）
+            r"(?<![a-z0-9.])w{2,}(?![a-z0-9.])",   # www / ｗｗｗ（単独の連打）
+            # Twitchのチャンネル絵文字は ○○Www の形が多いので、語中でも拾う。
+            # URLの www は直後が . なので当たらない。
+            r"(?<![./])w{3,}(?![.])",
             r"草|くさ|大草原|草原|草生",
             r"笑|わろ|爆笑|ぷぷ",
             r"\blol\b|\blmao\b|\brofl\b|\bxd\b",
-            r"lul|kek|omegalul|icant|lmfao",
+            r"lul|kek|omegalul|icant|lmfao|pepelaugh|lolw",
         ],
     },
     {

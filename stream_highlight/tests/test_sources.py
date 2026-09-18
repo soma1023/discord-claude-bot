@@ -214,6 +214,36 @@ class TestTwitchParsing(unittest.TestCase):
         self.assertEqual(msg.author, "")
         self.assertEqual(msg.text, "hi")
 
+    def test_system_notice_is_separated(self):
+        """サブスク告知などは本人の発言ではないので切り分けること。"""
+        cases = [
+            ("でいじ subscribed with Prime. They've subscribed for 43 months! ajak0nHi",
+             "ajak0nHi", "text"),
+            ("まじょ_ subscribed at Tier 1. They've subscribed for 13 months, "
+             "currently on a 9 month streak!", "", "system"),
+            ("raro_ga watched 55 consecutive streams and sparked a watch streak!",
+             "", "system"),
+            ("someone gifted a Tier 1 Sub to viewer!", "", "system"),
+            ("15 raiders from otherchannel have joined!", "", "system"),
+        ]
+        for text, expected_body, expected_kind in cases:
+            node = {"id": "x", "contentOffsetSeconds": 1,
+                    "commenter": {"displayName": "u"},
+                    "message": {"fragments": [{"text": text}]}}
+            msg = sources._node_to_message(node)
+            self.assertEqual(msg.text, expected_body, text)
+            self.assertEqual(msg.kind, expected_kind, text)
+
+    def test_normal_comments_are_untouched(self):
+        for text in ("それもえぐいww", "subscribe しようかな", "普通のコメント",
+                     "ajak0nWww", "888888"):
+            node = {"id": "x", "contentOffsetSeconds": 1,
+                    "commenter": {"displayName": "u"},
+                    "message": {"fragments": [{"text": text}]}}
+            msg = sources._node_to_message(node)
+            self.assertEqual(msg.text, text)
+            self.assertEqual(msg.kind, "text")
+
     def test_request_shapes(self):
         first = sources._comment_request("123", offset=600)
         self.assertEqual(first["variables"]["contentOffsetSeconds"], 600)

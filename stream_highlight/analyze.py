@@ -170,11 +170,17 @@ class Timeline:
         self.n = int(self.duration // self.bin_sec) + 1
         self.times = [i * self.bin_sec for i in range(self.n)]
 
-        # 各ビンに属するメッセージの添字
+        # 各ビンに属するメッセージの添字。
+        # システム通知（Twitchのサブスク告知など）は本人の発言ではないので、
+        # 盛り上がりの判定にも代表コメントにも使わない。
         self.buckets = [[] for _ in range(self.n)]
+        self.skipped_system = 0
         for idx, msg in enumerate(messages):
             if msg.offset < 0:
                 continue          # 配信開始前の待機チャットは無視する
+            if msg.kind == "system":
+                self.skipped_system += 1
+                continue
             b = int(msg.offset // self.bin_sec)
             if 0 <= b < self.n:
                 self.buckets[b].append(idx)
@@ -527,13 +533,15 @@ def analyze(messages, info, params=None, max_points=1800, loudness=None):
             "excess": _downsample(track.excess, step_a),
         }
 
-    total = len([m for m in messages if m.offset >= 0])
+    counted = [m for m in messages if m.offset >= 0 and m.kind != "system"]
+    total = len(counted)
     stats = {
         "messages": total,
-        "authors": len({m.author for m in messages if m.author}),
+        "authors": len({m.author for m in counted if m.author}),
         "duration": round(timeline.duration, 1),
         "per_minute": round(total / (timeline.duration / 60.0), 1) if timeline.duration else 0,
         "superchats": len([m for m in messages if m.kind in ("paid", "sticker")]),
+        "system_notices": timeline.skipped_system,
     }
 
     notice = ""
