@@ -77,17 +77,30 @@ def hide_own_console():
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # 戻り値と引数の型は必ず指定する。既定では32ビット整数として
+        # 扱われるため、64ビットのウィンドウハンドルが壊れることがある。
+        kernel32.GetConsoleWindow.argtypes = []
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        kernel32.GetConsoleProcessList.argtypes = [
+            ctypes.POINTER(ctypes.c_uint), ctypes.c_uint]
+        kernel32.GetConsoleProcessList.restype = ctypes.c_uint
+        user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.ShowWindow.restype = ctypes.c_bool
+
         window = kernel32.GetConsoleWindow()
         if not window:
             return False, False
 
-        # このコンソールを使っているプロセスを数える
+        # このコンソールを使っているプロセスを数える。
+        # 0 は取得失敗なので、その場合も触らない。
         buffer = (ctypes.c_uint * 8)()
         count = kernel32.GetConsoleProcessList(buffer, 8)
         if count != 1:
             return True, False        # 自分だけではないので、そのままにする
 
-        ctypes.windll.user32.ShowWindow(window, 0)   # 0 = SW_HIDE
+        user32.ShowWindow(window, 0)   # 0 = SW_HIDE
         return True, True
     except Exception:      # noqa: BLE001（隠せなくても本体は動かす）
         return False, False
