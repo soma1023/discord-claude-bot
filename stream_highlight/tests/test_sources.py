@@ -181,6 +181,34 @@ class TestYouTubeParsing(unittest.TestCase):
         self.assertEqual(msg.author, "太っ腹さん")
         self.assertEqual(msg.kind, "gift")
 
+    def test_subprocess_suppresses_console_window(self):
+        """Windowsで子プロセスの黒い画面が開かないように指定していること。"""
+        import subprocess
+
+        import yt_dlp  # noqa: F401  差し替える前に読み込ませておく
+
+        captured = {}
+
+        # subprocess.Popen を継承しているコードがあるので、関数ではなくクラスで差し替える
+        class FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured.update(kwargs)
+                self.stdout = []
+                self.returncode = 0
+
+            def wait(self):
+                return 0
+
+        original = subprocess.Popen
+        subprocess.Popen = FakePopen
+        try:
+            sources._run_ytdlp(["--version"])
+        finally:
+            subprocess.Popen = original
+
+        self.assertIn("creationflags", captured)
+        self.assertEqual(captured["creationflags"], sources._NO_CONSOLE)
+
     def test_error_messages_are_readable(self):
         self.assertIn("メンバー限定", sources._ytdlp_error(["ERROR: Join this channel members-only"]))
         self.assertIn("見つかりません", sources._ytdlp_error(["ERROR: Video unavailable"]))

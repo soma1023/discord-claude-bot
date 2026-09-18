@@ -24,6 +24,12 @@ from dataclasses import dataclass, asdict
 from . import paths
 
 
+# Windowsでコンソールを出さない設定のアプリから子プロセスを起動すると、
+# 既定では子プロセス用の黒い画面が開いてしまう。それを抑える。
+# Windows以外にこの定数は無いので、その場合は0（指定なし）になる。
+_NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 class FetchError(RuntimeError):
     """取得に失敗したときに投げる。メッセージはそのままUIに出す。"""
 
@@ -131,6 +137,7 @@ def _run_ytdlp(args, timeout=1800, on_line=None):
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=_NO_CONSOLE,
     )
     lines = []
     deadline = time.time() + timeout
