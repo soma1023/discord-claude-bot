@@ -9,7 +9,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audio as audio_mod
 from . import cache
 from . import code_version
 from .analyze import Params, analyze, analyze_keyword
@@ -24,13 +23,11 @@ app = FastAPI(title="配信ハイライト抽出", docs_url=None, redoc_url=None
 class AnalyzeRequest(BaseModel):
     url: str
     refresh: bool = False
-    with_audio: bool = False
     params: dict | None = None
 
 
 class ReanalyzeRequest(BaseModel):
     video_key: str
-    with_audio: bool = True
     params: dict | None = None
 
 
@@ -56,8 +53,7 @@ def index():
 @app.post("/api/analyze")
 def start_analyze(req: AnalyzeRequest):
     try:
-        job = manager.submit(req.url.strip(), Params.from_dict(req.params),
-                             req.refresh, req.with_audio)
+        job = manager.submit(req.url.strip(), Params.from_dict(req.params), req.refresh)
     except FetchError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"job_id": job.id}
@@ -74,9 +70,8 @@ def job_status(job_id: str):
 @app.post("/api/reanalyze")
 def reanalyze(req: ReanalyzeRequest):
     """取得済みのチャットを使って、感度などを変えて解析し直す（ダウンロード無し）。"""
-    info, messages, loudness = _chat_or_404(req.video_key)
-    result = analyze(messages, info, Params.from_dict(req.params),
-                     loudness=loudness if req.with_audio else None)
+    info, messages = _chat_or_404(req.video_key)
+    result = analyze(messages, info, Params.from_dict(req.params))
     result["video_key"] = req.video_key
     return result
 
@@ -86,14 +81,14 @@ def keyword(req: KeywordRequest):
     word = (req.keyword or "").strip()
     if not word:
         raise HTTPException(status_code=400, detail="検索するワードを入れてください。")
-    info, messages, _ = _chat_or_404(req.video_key)
+    info, messages = _chat_or_404(req.video_key)
     return analyze_keyword(messages, info, word, Params.from_dict(req.params))
 
 
 @app.get("/api/capabilities")
 def capabilities():
-    """音声解析が使える環境かどうかを画面に伝える。"""
-    return {"ffmpeg": audio_mod.ffmpeg_available(), "version": code_version()}
+    """動作中のコードを画面に伝える。"""
+    return {"version": code_version()}
 
 
 @app.get("/api/history")

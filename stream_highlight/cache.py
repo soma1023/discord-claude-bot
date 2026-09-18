@@ -10,7 +10,6 @@ import json
 import os
 import time
 
-from .audio import Loudness
 from .sources import ChatMessage, StreamInfo
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
@@ -27,6 +26,7 @@ def _path(platform, video_id):
 
 
 def _audio_path(platform, video_id):
+    """音声解析をやめる前に作られた音量ファイル。削除のためだけに残している。"""
     return os.path.join(CACHE_DIR, "%s_%s.audio.json.gz" % (_safe(platform), _safe(video_id)))
 
 
@@ -56,25 +56,6 @@ def save(info, messages):
         "info": info.as_dict(),
         "messages": [m.to_list() for m in messages],
     })
-
-
-def save_audio(info, loudness):
-    """音量列を保存する。音声のダウンロードは重いので必ず使い回す。"""
-    return _write_gz(_audio_path(info.platform, info.video_id), {
-        "version": CACHE_VERSION,
-        "saved_at": time.time(),
-        "loudness": loudness.as_dict(),
-    })
-
-
-def load_audio(platform, video_id):
-    payload = _read_gz(_audio_path(platform, video_id))
-    if not payload or payload.get("version") != CACHE_VERSION:
-        return None
-    try:
-        return Loudness.from_dict(payload["loudness"])
-    except (KeyError, TypeError, ValueError):
-        return None
 
 
 def load(platform, video_id):
@@ -114,7 +95,6 @@ def entries():
                 "title": info.get("title") or info["video_id"],
                 "duration": info.get("duration") or 0,
                 "messages": len(payload.get("messages") or []),
-                "has_audio": os.path.exists(_audio_path(info["platform"], info["video_id"])),
                 "saved_at": payload.get("saved_at") or os.path.getmtime(path),
             })
         except (OSError, ValueError, KeyError):

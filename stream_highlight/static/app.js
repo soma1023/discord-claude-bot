@@ -13,14 +13,10 @@ const state = {
   keyword: null,
   hover: null,
   drag: null,
-  audioOverlayTouched: false,
   poll: null,
 };
 
 const CATEGORY_COLORS = {};
-const AUDIO_KEY = "__audio__";
-// これ未満の跳ねは「声が大きくなった」と言うには弱いので、バッジを出さない
-const AUDIO_BADGE_DB = 3.0;
 const $ = (id) => document.getElementById(id);
 
 /* ------------------------------------------------------------ 小物 */
@@ -85,8 +81,6 @@ function currentParams() {
     window_sec: parseInt($("windowSec").value, 10),
     top_n: parseInt($("topN").value, 10),
     skip_start_sec: parseInt($("skipStart").value, 10),
-    audio_min_z: parseFloat($("audioMinZ").value),
-    chat_support_z: parseFloat($("chatSupportZ").value),
   };
 }
 
@@ -104,10 +98,7 @@ async function startAnalyze(url, refresh) {
     const { job_id } = await api("/api/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url, refresh: !!refresh, with_audio: $("audioInput").checked,
-        params: currentParams(),
-      }),
+      body: JSON.stringify({ url, refresh: !!refresh, params: currentParams() }),
     });
     pollJob(job_id);
   } catch (err) {
@@ -150,10 +141,7 @@ async function reanalyze() {
     const result = await api("/api/reanalyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        video_key: state.videoKey, with_audio: $("audioInput").checked,
-        params: currentParams(),
-      }),
+      body: JSON.stringify({ video_key: state.videoKey, params: currentParams() }),
     });
     state.keyword = null;
     applyResult(result);
@@ -178,9 +166,6 @@ function applyResult(result) {
   state.selected = null;
   state.view = { start: 0, end: result.stats.duration || 1 };
   (result.categories || []).forEach((c) => (CATEGORY_COLORS[c.id] = c.color));
-  PAD.r = result.audio && result.audio.available ? 46 : 14;   // 右軸のラベル用
-  // 音量は既定で非表示。重ねるとチャットの線が埋もれて、
-  // 肝心の盛り上がりが読めなくなるため。見たいときだけ「音量」を押す。
 
   // サーバ側で丸められた値をUIに戻す
   const p = result.params;
@@ -190,14 +175,11 @@ function applyResult(result) {
   $("tailSec").value = p.tail_sec;
   $("windowSec").value = p.window_sec;
   $("topN").value = p.top_n;
-  $("audioMinZ").value = p.audio_min_z;
-  $("chatSupportZ").value = p.chat_support_z;
   $("skipStart").value = p.skip_start_sec;
   syncOutputs();
 
   $("resultPanel").classList.remove("hidden");
   renderVideo(result);
-  renderAudioSummary(result);
   renderOverlayToggles(result);
   renderTabs();
   selectTab(state.keyword ? "keyword" : "all");
@@ -232,52 +214,10 @@ function renderVideo(result) {
   notice.classList.toggle("hidden", !result.notice);
 }
 
-function renderAudioSummary(result) {
-  const box = $("audioSummary");
-  const filter = $("audioFilterLabel");
-  const audio = result.audio || {};
-  if (!audio.available) {
-    box.classList.add("hidden");
-    filter.classList.add("hidden");
-    return;
-  }
-  const st = audio.stats;
-  if (!st.raw_peaks) {
-    // 音量の変化が緩やかな配信では、跳ねた箇所が無いのが正しい答えになる
-    box.innerHTML =
-      `<b>音量が大きく跳ねた箇所は見つかりませんでした。</b>` +
-      `<br><span class="small">この配信は音量の変化が緩やかなようです。` +
-      `「解析の設定」の<b>音量のしきい値</b>を下げると候補が増えます。` +
-      `各候補に付く「声 +◯dB」のバッジはしきい値と無関係に出ます。</span>`;
-  } else if (!st.chat_too_sparse) {
-    box.innerHTML =
-      `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
-      `（<b>${st.rejected}</b>件を除外）。` +
-      `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。` +
-      `この結果は各候補の「声 +◯dB」バッジと、上の「音声も跳ねた候補だけ」の絞り込みに使っています。</span>`;
-  } else if (st.chat_too_sparse) {
-    // コメントがほとんど流れない配信では、照合しようにも材料がない
-    box.innerHTML =
-      `音量が跳ねた箇所を <b>${st.raw_peaks}</b>件 見つけました。` +
-      `ただしこの配信はコメントが <b>${st.chat_per_minute}</b>件/分 と少なく、` +
-      `<b>音声とチャットの照合ができません</b>。` +
-      `<br><span class="small">照合は「音量が上がった直後にコメントが増えたか」で判定するため、` +
-      `もともとコメントがほとんど流れない配信では成立しません。` +
-      `音量の山はグラフのピンクの線で確認できます。` +
-      `各候補の「声 +◯dB」バッジはそのまま使えます。</span>`;
-  }
-  box.classList.remove("hidden");
-  filter.classList.remove("hidden");
-}
-
-const AUDIO_OVERLAY = { id: "__audio__", label: "音量", color: "#db61a2" };
-
 function renderOverlayToggles(result) {
   const box = $("overlayToggles");
   box.innerHTML = "";
-  const items = (result.categories || []).slice();
-  if (result.audio && result.audio.available) items.unshift(AUDIO_OVERLAY);
-  items.forEach((cat) => {
+  (result.categories || []).forEach((cat) => {
     const btn = document.createElement("button");
     btn.className = "toggle" + (state.overlays.has(cat.id) ? " on" : "");
     btn.textContent = cat.label;
@@ -285,7 +225,6 @@ function renderOverlayToggles(result) {
     btn.style.color = state.overlays.has(cat.id) ? "#06111f" : cat.color;
     btn.style.background = state.overlays.has(cat.id) ? cat.color : "transparent";
     btn.onclick = () => {
-      if (cat.id === AUDIO_KEY) state.audioOverlayTouched = true;
       if (state.overlays.has(cat.id)) state.overlays.delete(cat.id);
       else state.overlays.add(cat.id);
       renderOverlayToggles(result);
@@ -331,28 +270,17 @@ function selectTab(tab) {
   draw();
 }
 
-$("audioFilter").addEventListener("change", () => {
-  state.selected = null;
-  renderMoments();
-  draw();
-});
-
 function renderMoments() {
   const list = $("momentList");
   list.innerHTML = "";
-  const audioOnly = $("audioFilter").checked && !$("audioFilterLabel").classList.contains("hidden");
-  const moments = audioOnly
-    ? state.moments.filter((m) => m.audio && m.audio.excess_db >= AUDIO_BADGE_DB)
-    : state.moments;
+  const moments = state.moments;
   state.visible = moments;
 
   let summary;
   if (state.tab === "keyword" && state.keyword) {
     summary = `「${state.keyword.keyword}」は ${num(state.keyword.hits)} 回。よく飛んでいた順に ${moments.length} 箇所。`;
   } else if (!moments.length) {
-    summary = audioOnly
-      ? "音声も跳ねた候補はありませんでした。絞り込みを外してください。"
-      : "該当する候補がありません。感度を下げてみてください。";
+    summary = "該当する候補がありません。感度を下げてみてください。";
   } else {
     summary = `盛り上がった順に ${moments.length} 箇所。時刻をクリックすると配信のその場面が開きます。`;
   }
@@ -366,11 +294,7 @@ function renderMoments() {
     const chips = (m.tags || []).map((t) => {
       const color = CATEGORY_COLORS[t.id] || "#8b949e";
       return `<span class="chip" style="background:${color}">${escapeHtml(t.label)} ${t.count}</span>`;
-    }).join("") + (
-      m.audio && m.audio.excess_db >= AUDIO_BADGE_DB
-        ? `<span class="chip audio" title="平常の音量より ${m.audio.excess_db}dB 大きい">声 +${m.audio.excess_db}dB</span>`
-        : ""
-    );
+    }).join("");
 
     // 普段ほぼ出ないワードでは「普段の◯倍」が意味を持たないので出し分ける
     const hasBaseline = m.baseline_rate >= 1;
@@ -394,7 +318,6 @@ function renderMoments() {
         <div>
           <a class="time" href="${escapeHtml(m.url)}" target="_blank" rel="noopener">${fmtTime(m.clip_start)}</a>
           <span class="range">${fmtTime(m.clip_start)} 〜 ${fmtTime(m.clip_end)}（ピーク ${fmtTime(m.peak_sec)}）</span>
-          ${m.source === "audio" ? '<span class="source-audio">音声から検出</span>' : ""}
         </div>
         <div class="metrics">${metrics}</div>
         <div class="chips">${chips}</div>
@@ -520,18 +443,9 @@ function draw() {
   const base = columns(series.baseline, bin);
   const overlays = [];
   state.overlays.forEach((cid) => {
-    if (cid === AUDIO_KEY) return;   // 音量は単位が違うので右軸で別に描く
     const values = series.categories[cid];
     if (values) overlays.push({ color: CATEGORY_COLORS[cid] || "#fff", cols: columns(values, bin) });
   });
-  const audioOn = state.overlays.has(AUDIO_KEY) &&
-                  state.result.audio && state.result.audio.available;
-  // 見せ場と判定される水準を超えた分だけ描く。
-  // 平常どおりの音量まで描くと線が全面を埋めて、山が見えなくなる。
-  const audioFloor = audioOn ? (state.result.audio.threshold_db || 0) : 0;
-  const audioCols = audioOn
-    ? columns(state.result.audio.excess, bin).map((v) => Math.max(0, v - audioFloor))
-    : null;
   if (state.tab === "keyword" && state.keyword && state.keyword.series.length) {
     overlays.push({ color: "#ffd866", cols: columns(state.keyword.series, state.keyword.bin_sec) });
   }
@@ -626,40 +540,6 @@ function draw() {
   });
   ctx.lineWidth = 1;
 
-  // 音量（平常からの差・dB）。コメント数とは単位が違うので右側の軸に振る
-  if (audioOn) {
-    let aMax = 6;
-    audioCols.forEach((v) => {
-      if (v > aMax) aMax = v;
-    });
-    aMax = niceMax(aMax);
-    const aMin = 0;
-    const yAudio = (v) => PAD.t + plot.h - ((v - aMin) / (aMax - aMin)) * plot.h;
-
-    ctx.strokeStyle = "rgba(219,97,162,0.35)";
-    ctx.setLineDash([2, 3]);
-    ctx.beginPath();
-    ctx.moveTo(PAD.l, yAudio(0));
-    ctx.lineTo(PAD.l + plot.w, yAudio(0));
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    ctx.beginPath();
-    audioCols.forEach((v, px) => (px ? ctx.lineTo(PAD.l + px, yAudio(v))
-                                     : ctx.moveTo(PAD.l, yAudio(v))));
-    ctx.strokeStyle = AUDIO_OVERLAY.color;
-    ctx.lineWidth = 1.4;
-    ctx.stroke();
-    ctx.lineWidth = 1;
-
-    ctx.fillStyle = AUDIO_OVERLAY.color;
-    ctx.textAlign = "left";
-    [aMax, 0].forEach((v) => ctx.fillText((v > 0 ? "+" : "") + v + "dB",
-                                          PAD.l + plot.w + 5, yAudio(v) + 4));
-    ctx.fillText("音量超過", PAD.l + plot.w + 5, PAD.t - 12);
-    ctx.textAlign = "center";
-  }
-
   // 候補のマーカー
   state.visible.forEach((m, index) => {
     if (m.peak_sec < state.view.start || m.peak_sec > state.view.end) return;
@@ -709,11 +589,6 @@ function eventX(ev) {
   return Math.min(PAD.l + plot.w, Math.max(PAD.l, ev.clientX - rect.left));
 }
 
-function audioFloorForTip() {
-  const audio = state.result && state.result.audio;
-  return audio && audio.available ? (audio.threshold_db || 0) : 0;
-}
-
 function nearestMoment(t) {
   let best = null;
   let bestDist = Infinity;
@@ -742,13 +617,6 @@ canvas.addEventListener("mousemove", (ev) => {
     `<b>${fmtTime(state.hover)}</b>`,
     `${Math.round(series.rate[idx])} コメ/分（平常 ${Math.round(series.baseline[idx])}）`,
   ];
-  if (state.overlays.has(AUDIO_KEY) && state.result.audio && state.result.audio.available) {
-    const excess = state.result.audio.excess;
-    const ai = Math.min(excess.length - 1, Math.max(0, Math.floor(state.hover / series.bin_sec)));
-    const over = excess[ai] - audioFloorForTip();
-    lines.push(`<span style="color:${AUDIO_OVERLAY.color}">音量 ${excess[ai] > 0 ? "+" : ""}${excess[ai]}dB`
-      + (over >= 0 ? `（しきい値+${over.toFixed(1)}）` : "") + `</span>`);
-  }
   if (near != null) {
     const m = state.visible[near];
     const tags = (m.tags || []).map((t) => `${t.label}${t.count}`).join(" ");
@@ -941,12 +809,6 @@ async function loadCapabilities() {
       // サーバを再起動し忘れると画面だけ新しくなるので、動作中の版を出しておく
       $("codeVersion").textContent = caps.version;
     }
-    if (!caps.ffmpeg) {
-      $("audioInput").disabled = true;
-      $("audioLabel").classList.add("disabled");
-      $("audioLabel").title =
-        "音声解析には ffmpeg が必要です。`pip install imageio-ffmpeg` で使えるようになります。";
-    }
   } catch (err) {
     /* 判定できなければ触らずそのままにする */
   }
@@ -955,7 +817,6 @@ async function loadCapabilities() {
 function syncOutputs() {
   const pairs = [["minZ", "minZOut"], ["mergeSec", "mergeSecOut"], ["leadSec", "leadSecOut"],
                  ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"],
-                 ["audioMinZ", "audioMinZOut"], ["chatSupportZ", "chatSupportZOut"],
                  ["skipStart", "skipStartOut"]];
   pairs.forEach(([input, out]) => {
     const value = $(input).value;
@@ -966,7 +827,7 @@ function syncOutputs() {
 }
 
 ["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN",
- "audioMinZ", "chatSupportZ", "skipStart"].forEach((id) => {
+ "skipStart"].forEach((id) => {
   $(id).addEventListener("input", syncOutputs);
 });
 
@@ -989,8 +850,6 @@ $("leadSec").value = 30;
 $("tailSec").value = 15;
 $("windowSec").value = 30;
 $("topN").value = 30;
-$("audioMinZ").value = 3;
-$("chatSupportZ").value = 2;
 $("skipStart").value = 0;
 syncOutputs();
 loadHistory();

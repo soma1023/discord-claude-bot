@@ -23,7 +23,7 @@ REM --- pip が使えるか ---
 if errorlevel 1 goto NOPIP
 
 REM --- ライブラリが揃っていれば、そのまま起動する ---
-%PY% -c "import fastapi, uvicorn, yt_dlp, imageio_ffmpeg" >nul 2>&1
+%PY% -c "import fastapi, uvicorn, yt_dlp" >nul 2>&1
 if not errorlevel 1 goto RUN
 
 echo 必要なライブラリをインストールします（初回のみ・数分かかります）
@@ -32,7 +32,7 @@ echo.
 if errorlevel 1 goto PIPFAIL
 
 REM --- インストール直後にもう一度確認する ---
-%PY% -c "import fastapi, uvicorn, yt_dlp, imageio_ffmpeg" >nul 2>&1
+%PY% -c "import fastapi, uvicorn, yt_dlp" >nul 2>&1
 if errorlevel 1 goto IMPORTFAIL
 
 :RUN

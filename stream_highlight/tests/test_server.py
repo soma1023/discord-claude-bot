@@ -19,7 +19,6 @@ from stream_highlight import cache
 from stream_highlight.jobs import manager
 from stream_highlight.server import app
 from stream_highlight.tests.test_analyze import DURATION, SPIKES, build_chat
-from stream_highlight.tests.test_audio import SFX_EVENTS, scenario
 
 DEMO_ID = "demo1234567"
 DEMO_URL = "https://www.youtube.com/watch?v=%s" % DEMO_ID
@@ -35,9 +34,7 @@ class TestServer(unittest.TestCase):
         info = StreamInfo("youtube", DEMO_ID, DEMO_URL, title="テスト配信",
                           channel="テスト配信者", duration=DURATION)
         cls.info = info
-        messages, loudness = scenario()
-        cache.save(info, messages)
-        cache.save_audio(info, loudness)
+        cache.save(info, build_chat())
         cls.client = TestClient(app)
 
     @classmethod
@@ -114,34 +111,9 @@ class TestServer(unittest.TestCase):
 
     def test_capabilities(self):
         body = self.client.get("/api/capabilities").json()
-        self.assertIn("ffmpeg", body)
-        self.assertIsInstance(body["ffmpeg"], bool)
+        self.assertTrue(body["version"])
 
-    def test_audio_flows_through(self):
-        """保存済みの音量列を使って、音声込みの解析が返ること。"""
-        status = self.run_job()
-        self.assertEqual(status["status"], "done", status.get("error"))
-        result = status["result"]
-        # 既定ではチャットのみ（音声のダウンロードを勝手に始めない）
-        self.assertFalse(result["audio"]["available"])
 
-        withaudio = self.client.post("/api/reanalyze", json={
-            "video_key": "youtube:%s" % DEMO_ID, "with_audio": True})
-        self.assertEqual(withaudio.status_code, 200, withaudio.text)
-        body = withaudio.json()
-        self.assertTrue(body["audio"]["available"])
-        self.assertGreater(body["audio"]["stats"]["rejected"], 0)
-        self.assertTrue(any(m.get("audio") for m in body["moments"]))
-
-        without = self.client.post("/api/reanalyze", json={
-            "video_key": "youtube:%s" % DEMO_ID, "with_audio": False})
-        self.assertFalse(without.json()["audio"]["available"])
-
-    def test_audio_cache_is_separate_from_history(self):
-        """音量ファイルが配信履歴として二重に出てこないこと。"""
-        entries = self.client.get("/api/history").json()["entries"]
-        self.assertEqual(len([e for e in entries if e["video_id"] == DEMO_ID]), 1)
-        self.assertTrue(entries[0]["has_audio"])
 
     def test_index_and_assets(self):
         for path in ("/", "/static/app.js", "/static/style.css"):

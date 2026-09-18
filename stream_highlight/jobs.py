@@ -8,7 +8,6 @@ import traceback
 import uuid
 from collections import OrderedDict
 
-from . import audio as audio_mod
 from . import cache
 from .analyze import analyze
 from .sources import FetchError, fetch_chat, fetch_info, parse_url
@@ -18,12 +17,11 @@ MAX_LOADED = 4         # メモリに載せておく配信数（1件で数万〜
 
 
 class Job:
-    def __init__(self, job_id, url, params, refresh, with_audio=False):
+    def __init__(self, job_id, url, params, refresh):
         self.id = job_id
         self.url = url
         self.params = params
         self.refresh = refresh
-        self.with_audio = with_audio
         self.status = "pending"      # pending / running / done / error
         self.message = "待機中…"
         self.progress = 0.0
@@ -54,21 +52,15 @@ class JobManager:
 
     # -- チャット本体の保持 ------------------------------------------
 
-    def _remember(self, key, info, messages, loudness=None):
+    def _remember(self, key, info, messages):
         with self._lock:
-            previous = self._loaded.get(key)
-            if loudness is None and previous:
-                loudness = previous[2]        # 既に取ってある音量列は捨てない
-            self._loaded[key] = (info, messages, loudness)
+            self._loaded[key] = (info, messages)
             self._loaded.move_to_end(key)
             while len(self._loaded) > MAX_LOADED:
                 self._loaded.popitem(last=False)
 
     def get_chat(self, video_key):
-        """メモリ→ディスクキャッシュの順に探す。
-
-        戻り値は (StreamInfo, messages, loudness or None)。見つからなければ None。
-        """
+        """メモリ→ディスクキャッシュの順に探す。見つからなければ None。"""
         with self._lock:
             found = self._loaded.get(video_key)
             if found:
@@ -80,18 +72,14 @@ class JobManager:
         loaded = cache.load(platform, video_id)
         if not loaded:
             return None
-        info, messages = loaded
-        loudness = cache.load_audio(platform, video_id)
-        self._remember(video_key, info, messages, loudness)
-        return info, messages, loudness
+        self._remember(video_key, loaded[0], loaded[1])
+        return loaded
 
     # -- ジョブ ------------------------------------------------------
 
-    def submit(self, url, params, refresh=False, with_audio=False):
+    def submit(self, url, params, refresh=False):
         parse_url(url)   # 先にURLを検証して、おかしければここで弾く
-        if with_audio:
-            audio_mod.find_ffmpeg()   # 落としてから足りないと分かるのを避ける
-        job = Job(uuid.uuid4().hex[:12], url, params, refresh, with_audio)
+        job = Job(uuid.uuid4().hex[:12], url, params, refresh)
         with self._lock:
             self._jobs[job.id] = job
             while len(self._jobs) > MAX_JOBS:
@@ -110,8 +98,7 @@ class JobManager:
             key = "%s:%s" % (platform, video_id)
             job.video_key = key
 
-            # 音声まで取るときは、チャットは全体の前半分の進捗として扱う
-            chat_share = 0.45 if job.with_audio else 0.9
+            chat_share = 0.9
 
             def stage_progress(low, high):
                 def report(message, frac):
@@ -122,11 +109,10 @@ class JobManager:
 
             loaded = None if job.refresh else self.get_chat(key)
             if loaded:
-                info, messages, loudness = loaded
+                info, messages = loaded
                 job.message = "保存済みのチャットを使用中…"
                 job.progress = chat_share
             else:
-                loudness = None
                 job.message = "配信情報を取得中…"
                 info = fetch_info(job.url)
                 job.progress = 0.05
@@ -136,17 +122,9 @@ class JobManager:
                 cache.save(info, messages)
                 self._remember(key, info, messages)
 
-            if job.with_audio and loudness is None:
-                job.message = "音声を取得中…"
-                loudness = audio_mod.fetch_loudness(
-                    info, progress=stage_progress(chat_share, 0.92))
-                cache.save_audio(info, loudness)
-                self._remember(key, info, messages, loudness)
-
             job.message = "盛り上がりを解析中…"
             job.progress = 0.95
-            job.result = analyze(messages, info, job.params,
-                                 loudness=loudness if job.with_audio else None)
+            job.result = analyze(messages, info, job.params)
             job.result["video_key"] = key
             job.progress = 1.0
             job.message = "完了"
