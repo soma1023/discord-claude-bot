@@ -29,6 +29,7 @@ class Params:
     min_z: float = 3.0         # 見せ場と判定するしきい値（感度）
     merge_sec: int = 90        # これ以内のピークは1つにまとめる
     top_n: int = 30            # 出す候補の数
+    skip_start_sec: int = 0    # 配信開始から何秒を無視するか（挨拶ラッシュ対策）
     lead_sec: int = 30         # 切り出し開始をピークの何秒前にするか
     tail_sec: int = 15         # 切り出し終了をピークの何秒後にするか
 
@@ -49,6 +50,7 @@ class Params:
             "bin_sec": (1, 60), "window_sec": (5, 300), "baseline_sec": (60, 3600),
             "min_z": (0.5, 10.0), "merge_sec": (5, 600), "top_n": (1, 200),
             "lead_sec": (0, 300), "tail_sec": (0, 300),
+            "skip_start_sec": (0, 1800),
             "audio_min_z": (0.5, 10.0), "audio_min_db": (0.0, 30.0),
             "chat_support_z": (0.0, 10.0), "chat_lag_sec": (0, 120),
         }
@@ -221,8 +223,10 @@ class Timeline:
             self.body.append(text if is_notice else msg.text)
 
         for idx, msg in enumerate(messages):
-            if msg.offset < 0:
-                continue          # 配信開始前の待機チャットは無視する
+            if msg.offset < params.skip_start_sec:
+                # 配信開始前の待機チャットと、開始直後の挨拶ラッシュを外す。
+                # 既定は0秒なので、指定しない限り何も隠さない。
+                continue
             if msg.kind == "system" or not self.body[idx].strip():
                 self.skipped_system += 1
                 continue
@@ -580,10 +584,15 @@ def analyze(messages, info, params=None, max_points=1800, loudness=None):
             }
             audio_moments.append(moment)
         audio_stats["already_in_chat_list"] = len(confirmed) - len(extra)
+        # グラフは「見せ場と判定される水準を超えた分」だけ描く。
+        # 中心化したことで excess の半分は0を超えるため、そのまま描くと
+        # 線が全面を埋めてしまい、どこが山なのか分からなくなる。
+        threshold_db = max(params.audio_min_z * track.spread, params.audio_min_db)
         audio_payload = {
             "available": True,
             "stats": audio_stats,
             "spread_db": round(track.spread, 2),
+            "threshold_db": round(threshold_db, 2),
             "excess": _downsample(track.excess, step_a),
         }
 

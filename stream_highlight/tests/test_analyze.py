@@ -161,6 +161,33 @@ class TestAnalyze(unittest.TestCase):
         self.assertFalse(any(abs(m["peak_sec"] - 4000) <= 40 for m in result["moments"]),
                          "保存済みの通知を見せ場にしている")
 
+    def test_skip_start_removes_opening_rush(self):
+        """配信開始直後の挨拶ラッシュを外せること。既定では何も隠さない。"""
+        messages = list(self.messages)
+        for i in range(60):
+            messages.append(ChatMessage(20 + i * 0.5, "v%d" % i, "こんばんは"))
+        messages.sort(key=lambda m: m.offset)
+
+        kept = analyze(messages, INFO, Params())
+        self.assertTrue(any(m["peak_sec"] < 120 for m in kept["moments"]),
+                        "既定では開始直後も候補に残るべき")
+
+        skipped = analyze(messages, INFO, Params(skip_start_sec=180))
+        self.assertFalse(any(m["peak_sec"] < 180 for m in skipped["moments"]))
+        # 本来の見せ場は残る
+        for spike in SPIKES:
+            self.assertTrue(any(abs(m["peak_sec"] - spike) <= 20
+                                for m in skipped["moments"]), spike)
+
+    def test_audio_threshold_is_reported(self):
+        """グラフの表示下限に使うしきい値を返すこと。"""
+        from stream_highlight.tests.test_audio import scenario
+        messages, loudness = scenario()
+        result = analyze(messages, INFO, Params(), loudness=loudness)
+        self.assertGreater(result["audio"]["threshold_db"], 0)
+        self.assertGreaterEqual(result["audio"]["threshold_db"],
+                                result["params"]["audio_min_db"])
+
     def test_no_messages(self):
         result = analyze([], INFO, Params())
         self.assertEqual(result["moments"], [])

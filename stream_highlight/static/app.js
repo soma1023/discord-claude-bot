@@ -84,6 +84,7 @@ function currentParams() {
     tail_sec: parseInt($("tailSec").value, 10),
     window_sec: parseInt($("windowSec").value, 10),
     top_n: parseInt($("topN").value, 10),
+    skip_start_sec: parseInt($("skipStart").value, 10),
     audio_min_z: parseFloat($("audioMinZ").value),
     chat_support_z: parseFloat($("chatSupportZ").value),
   };
@@ -193,6 +194,7 @@ function applyResult(result) {
   $("topN").value = p.top_n;
   $("audioMinZ").value = p.audio_min_z;
   $("chatSupportZ").value = p.chat_support_z;
+  $("skipStart").value = p.skip_start_sec;
   syncOutputs();
 
   $("resultPanel").classList.remove("hidden");
@@ -530,9 +532,11 @@ function draw() {
   });
   const audioOn = state.overlays.has(AUDIO_KEY) &&
                   state.result.audio && state.result.audio.available;
-  // 平常より小さい時間は見たいものではないので、0で止めて山だけを残す
+  // 見せ場と判定される水準を超えた分だけ描く。
+  // 平常どおりの音量まで描くと線が全面を埋めて、山が見えなくなる。
+  const audioFloor = audioOn ? (state.result.audio.threshold_db || 0) : 0;
   const audioCols = audioOn
-    ? columns(state.result.audio.excess, bin).map((v) => Math.max(0, v))
+    ? columns(state.result.audio.excess, bin).map((v) => Math.max(0, v - audioFloor))
     : null;
   if (state.tab === "keyword" && state.keyword && state.keyword.series.length) {
     overlays.push({ color: "#ffd866", cols: columns(state.keyword.series, state.keyword.bin_sec) });
@@ -658,7 +662,7 @@ function draw() {
     ctx.textAlign = "left";
     [aMax, 0].forEach((v) => ctx.fillText((v > 0 ? "+" : "") + v + "dB",
                                           PAD.l + plot.w + 5, yAudio(v) + 4));
-    ctx.fillText("音量", PAD.l + plot.w + 5, PAD.t - 12);
+    ctx.fillText("音量超過", PAD.l + plot.w + 5, PAD.t - 12);
     ctx.textAlign = "center";
   }
 
@@ -711,6 +715,11 @@ function eventX(ev) {
   return Math.min(PAD.l + plot.w, Math.max(PAD.l, ev.clientX - rect.left));
 }
 
+function audioFloorForTip() {
+  const audio = state.result && state.result.audio;
+  return audio && audio.available ? (audio.threshold_db || 0) : 0;
+}
+
 function nearestMoment(t) {
   let best = null;
   let bestDist = Infinity;
@@ -742,7 +751,9 @@ canvas.addEventListener("mousemove", (ev) => {
   if (state.overlays.has(AUDIO_KEY) && state.result.audio && state.result.audio.available) {
     const excess = state.result.audio.excess;
     const ai = Math.min(excess.length - 1, Math.max(0, Math.floor(state.hover / series.bin_sec)));
-    lines.push(`<span style="color:${AUDIO_OVERLAY.color}">音量 ${excess[ai] > 0 ? "+" : ""}${excess[ai]}dB</span>`);
+    const over = excess[ai] - audioFloorForTip();
+    lines.push(`<span style="color:${AUDIO_OVERLAY.color}">音量 ${excess[ai] > 0 ? "+" : ""}${excess[ai]}dB`
+      + (over >= 0 ? `（しきい値+${over.toFixed(1)}）` : "") + `</span>`);
   }
   if (near != null) {
     const m = state.visible[near];
@@ -950,12 +961,18 @@ async function loadCapabilities() {
 function syncOutputs() {
   const pairs = [["minZ", "minZOut"], ["mergeSec", "mergeSecOut"], ["leadSec", "leadSecOut"],
                  ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"],
-                 ["audioMinZ", "audioMinZOut"], ["chatSupportZ", "chatSupportZOut"]];
-  pairs.forEach(([input, out]) => ($(out).value = $(input).value));
+                 ["audioMinZ", "audioMinZOut"], ["chatSupportZ", "chatSupportZOut"],
+                 ["skipStart", "skipStartOut"]];
+  pairs.forEach(([input, out]) => {
+    const value = $(input).value;
+    $(out).value = out === "skipStartOut"
+      ? (Number(value) ? `${Math.round(Number(value) / 60)}分` : "なし")
+      : value;
+  });
 }
 
 ["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN",
- "audioMinZ", "chatSupportZ"].forEach((id) => {
+ "audioMinZ", "chatSupportZ", "skipStart"].forEach((id) => {
   $(id).addEventListener("input", syncOutputs);
 });
 
@@ -980,6 +997,7 @@ $("windowSec").value = 30;
 $("topN").value = 30;
 $("audioMinZ").value = 3;
 $("chatSupportZ").value = 2;
+$("skipStart").value = 0;
 syncOutputs();
 loadHistory();
 loadCapabilities();
