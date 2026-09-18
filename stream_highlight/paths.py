@@ -57,3 +57,37 @@ def data_dir():
     fallback = os.path.join(home, "StreamHighlight")
     os.makedirs(fallback, exist_ok=True)
     return fallback
+
+
+def hide_own_console():
+    """自分専用のコンソールが付いていたら隠す。
+
+    exe化の設定でコンソールは出さないようにしているが、環境によっては
+    付いてしまうことがある。理由を問わず消せるよう、ここで念のため隠す。
+
+    ただし、コマンドプロンプトから起動した場合など、他から引き継いだ
+    コンソールは利用者の画面なので触らない。そのコンソールを使っている
+    プロセスが自分だけのときだけ隠す。
+
+    戻り値は (コンソールがあったか, 隠したか)。
+    """
+    if os.name != "nt":
+        return False, False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        window = kernel32.GetConsoleWindow()
+        if not window:
+            return False, False
+
+        # このコンソールを使っているプロセスを数える
+        buffer = (ctypes.c_uint * 8)()
+        count = kernel32.GetConsoleProcessList(buffer, 8)
+        if count != 1:
+            return True, False        # 自分だけではないので、そのままにする
+
+        ctypes.windll.user32.ShowWindow(window, 0)   # 0 = SW_HIDE
+        return True, True
+    except Exception:      # noqa: BLE001（隠せなくても本体は動かす）
+        return False, False
