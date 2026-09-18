@@ -21,6 +21,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 
+from . import paths
+
 
 class FetchError(RuntimeError):
     """取得に失敗したときに投げる。メッセージはそのままUIに出す。"""
@@ -105,7 +107,14 @@ def parse_url(url):
 # ---------------------------------------------------------------- yt-dlp
 
 def _ytdlp_command():
-    """yt-dlp の起動コマンドを返す。pip導入・単体exeのどちらでも動くようにする。"""
+    """yt-dlp の起動コマンドを返す。
+
+    exe化すると sys.executable は自分自身を指すため、`-m yt_dlp` では
+    アプリが再起動してしまう。そこで「--ytdlp を付けて自分を呼ぶと
+    yt-dlp として振る舞う」入口を用意し、それを使う。
+    """
+    if paths.is_frozen():
+        return [sys.executable, "--ytdlp"]
     try:
         import yt_dlp  # noqa: F401
         return [sys.executable, "-m", "yt_dlp"]
@@ -415,7 +424,7 @@ _GQL_HASH = "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a"
 _NULL_RETRY_WAIT = 1.5      # 空応答の再試行間隔（テストでは0にする）
 
 # 失敗したときに生の応答を残す場所。原因究明の手がかりになる。
-DEBUG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "twitch_debug.json")
+DEBUG_PATH = os.path.join(paths.data_dir(), "twitch_debug.json")
 
 
 def _gql_post(payload, retries=4, client_id=None):

@@ -12,6 +12,20 @@ def code_version():
     サーバを再起動し忘れると、画面だけ新しくコードが古いという状態になり、
     原因の切り分けが難しくなる。画面に出して一目で分かるようにする。
     """
+    from . import paths
+
+    # exe化したときは .git が無いので、ビルド時に埋め込んだIDを使う
+    for base in (paths.bundle_dir(), os.path.dirname(os.path.abspath(__file__))):
+        stamp = os.path.join(base, "_build_id.txt")
+        if os.path.exists(stamp):
+            try:
+                with open(stamp, encoding="utf-8") as fh:
+                    value = fh.read().strip()
+                if value:
+                    return value
+            except OSError:
+                pass
+
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     git = os.path.join(root, ".git")
     try:

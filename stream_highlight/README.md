@@ -121,6 +121,36 @@ ffmpeg の ebur128 でモーメンタリラウドネス（LUFS）を100ms刻み�
 - 候補マーカーをクリック: 一覧の該当項目を選択
 - 何もない場所をクリック: その時刻の配信を開く
 
+## exe にまとめる
+
+Python も git も要らない形にできる。`build_exe.bat` をダブルクリックすると、
+`dist\StreamHighlight\` に一式ができあがる。初回は10分ほどかかる。
+
+```
+dist\StreamHighlight\
+  StreamHighlight.exe    ← これを実行する
+  data\                  ← チャットの保存先。消せばキャッシュが消える
+  _internal\             ← 中身。触らなくてよい
+```
+
+**フォルダごとどこへ移してもそのまま動く。** 別のPCにコピーしても、
+そちらに Python が入っていなくても動く。
+ショートカットをデスクトップに作っておくと楽。
+
+### exe化で気をつけた点
+
+- exe化すると `sys.executable` は自分自身を指すため、`python -m yt_dlp` の形で
+  yt-dlp を呼べなくなる。そこで `StreamHighlight.exe --ytdlp …` と呼ぶと
+  yt-dlp として振る舞う入口を用意している（`run_app.py`）。
+- 保存先は exe の隣の `data`。書き込めない場所（Program Files など）に
+  置かれた場合だけ `%LOCALAPPDATA%\StreamHighlight` に逃がす。
+- yt-dlp は配信サイトごとの抽出器を実行時に読み込むため、
+  `collect_submodules("yt_dlp")` でまとめて同梱している。
+  これを省くと「対応していないURL」と言われる。
+- 配布物でもバージョンが分かるよう、ビルド時にコミットIDを埋め込む。
+
+exe を作り直さなくても、開発中は `start_highlight.bat` で従来どおり動く。
+
 ## 更新したあとは必ず再起動する
 
 `git pull` でコードを更新したら、**サーバを起動し直す**こと。

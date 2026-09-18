@@ -112,6 +112,13 @@ python -m stream_highlight.diagnose <VODのURL>
 
 `.gitignore` は `.env.*` を除外するよう修正済み（`.env.example` は対象外）。
 
+## exe 版
+
+`build_exe.bat` で `dist\StreamHighlight\` に一式ができる。
+Python も git も不要で、フォルダごと移動できる。
+Linux上でビルドして通しで動作確認済み（起動・画面・解析・ワード検索・
+yt-dlpの自己呼び出し）。**Windowsでのビルドは未実施。**
+
 ## 手元での動かし方
 
 ```

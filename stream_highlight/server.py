@@ -9,13 +9,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cache
+from . import cache, paths
 from . import code_version
 from .analyze import Params, analyze, analyze_keyword
 from .jobs import manager
 from .sources import FetchError
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_DIR = paths.static_dir()
 
 app = FastAPI(title="配信ハイライト抽出", docs_url=None, redoc_url=None)
 
@@ -115,8 +115,9 @@ def main():
     args = parser.parse_args()
 
     url = "http://%s:%d/" % ("127.0.0.1" if args.host == "0.0.0.0" else args.host, args.port)
-    print("配信ハイライト抽出ツール: %s" % url)
-    print("動作中のコード: %s" % code_version())
+    print("配信ハイライト抽出ツール: %s" % url, flush=True)
+    print("動作中のコード: %s" % code_version(), flush=True)
+    print("保存先: %s" % paths.data_dir(), flush=True)
     if not args.no_browser:
         import threading
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()

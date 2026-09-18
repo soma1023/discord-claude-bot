@@ -10,4 +10,9 @@ logs/
 bot.log
 stream_highlight/cache/
 stream_highlight/twitch_debug.json
+stream_highlight/_build_id.txt
+
+# exe化の作業用（ビルド結果は配布物なのでリポジトリには入れない）
+build/
+dist/
 install_error.log

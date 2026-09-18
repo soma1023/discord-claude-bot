@@ -10,9 +10,10 @@ import json
 import os
 import time
 
+from . import paths
 from .sources import ChatMessage, StreamInfo
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+CACHE_DIR = os.path.join(paths.data_dir(), "cache")
 CACHE_VERSION = 1
 
 
