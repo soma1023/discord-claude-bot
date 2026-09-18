@@ -242,12 +242,24 @@ function renderAudioSummary(result) {
     return;
   }
   const st = audio.stats;
-  box.innerHTML =
-    `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
-    `（<b>${st.rejected}</b>件を除外）。` +
-    `うち <b>${st.already_in_chat_list}</b>件はチャット側で既に拾えていたので、` +
-    `「音声」タブには残り <b>${result.audio_moments.length}</b>件を出しています。` +
-    `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。</span>`;
+  if (st.chat_too_sparse) {
+    // コメントがほとんど流れない配信では、照合しようにも材料がない
+    box.innerHTML =
+      `音量が跳ねた箇所を <b>${st.raw_peaks}</b>件 見つけました。` +
+      `ただしこの配信はコメントが <b>${st.chat_per_minute}</b>件/分 と少なく、` +
+      `<b>音声とチャットの照合ができません</b>。` +
+      `<br><span class="small">照合は「音量が上がった直後にコメントが増えたか」で判定するため、` +
+      `もともとコメントがほとんど流れない配信では成立しません。` +
+      `音量の山はグラフのピンクの線で確認できます。` +
+      `各候補の「声 +◯dB」バッジはそのまま使えます。</span>`;
+  } else {
+    box.innerHTML =
+      `音量が跳ねた箇所 <b>${st.raw_peaks}</b>件 → チャットも反応していたのは <b>${st.confirmed}</b>件` +
+      `（<b>${st.rejected}</b>件を除外）。` +
+      `うち <b>${st.already_in_chat_list}</b>件はチャット側で既に拾えていたので、` +
+      `「音声」タブには残り <b>${result.audio_moments.length}</b>件を出しています。` +
+      `<br><span class="small">除外した分の多くはゲームのSEなど、音量だけ大きい箇所です。</span>`;
+  }
   box.classList.remove("hidden");
   filter.classList.remove("hidden");
 }

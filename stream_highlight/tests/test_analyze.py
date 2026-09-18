@@ -9,7 +9,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from stream_highlight.analyze import Params, analyze, analyze_keyword, rolling_median
+from stream_highlight.analyze import (Params, analyze, analyze_keyword,
+                                      rolling_median, rolling_quantile)
 from stream_highlight.sources import ChatMessage, StreamInfo
 from stream_highlight.patterns import normalize, classify
 
@@ -155,6 +156,20 @@ class TestAnalyze(unittest.TestCase):
         self.assertEqual(p.top_n, 20)
         # 刻みより短い窓は意味がないので、bin_sec まで引き上げられる
         self.assertEqual(p.window_sec, 60)
+
+    def test_rolling_quantile_picks_higher_level(self):
+        """高い分位点は、静かな時間に基準を引き下げられないこと。"""
+        # 半分が静か(-45)、半分がしゃべり(-25)という音量の並び
+        values = [-45.0 if i % 2 else -25.0 for i in range(400)]
+        median = rolling_quantile(values, 100, q=0.5)
+        high = rolling_quantile(values, 100, q=0.8)
+        self.assertLess(median[200], -30.0, "中央値は静かな時間に引っ張られる")
+        self.assertGreater(high[200], -30.0, "高い分位点はしゃべり側に寄るべき")
+
+    def test_rolling_quantile_bounds(self):
+        values = [float(i) for i in range(101)]
+        self.assertEqual(rolling_quantile(values, 1000, q=0.0)[50], 0.0)
+        self.assertEqual(rolling_quantile(values, 1000, q=1.0)[50], 100.0)
 
     def test_rolling_median_ignores_spikes(self):
         values = [10.0] * 200

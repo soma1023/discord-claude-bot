@@ -11,7 +11,9 @@
 import json
 import sys
 
-from . import sources
+from . import cache, sources
+from .analyze import AUDIO_BASELINE_Q, Params, _quantile, mad, rolling_quantile
+from .audio import SILENCE_FLOOR
 from .sources import FetchError, parse_url
 
 
@@ -134,6 +136,58 @@ def check_youtube(url):
     return True
 
 
+def check_audio(platform, video_id):
+    """保存済みの音量データの分布を見る。
+
+    音量の平常値をどう取るべきかは配信の音づくりで変わるので、
+    実際のデータの形が分からないと調整できない。
+    """
+    head("[4] 音量データの分布")
+    loudness = cache.load_audio(platform, video_id)
+    if loudness is None:
+        line("音量データはまだ保存されていません。")
+        line("「音声も解析」にチェックを入れて解析すると作られます。")
+        return
+
+    values = loudness.values
+    ordered = sorted(values)
+    line("サンプル数: %d（%.1f 時間ぶん）" % (len(values), loudness.duration / 3600))
+    line()
+    line("音量の分布（LUFS）:")
+    for q in (0.05, 0.25, 0.50, 0.75, 0.90, 0.99):
+        line("  %3.0f%%点 : %7.1f" % (q * 100, _quantile(ordered, q)))
+    silent = sum(1 for v in values if v <= SILENCE_FLOOR + 1)
+    line("  無音に近い割合: %.1f%%" % (100.0 * silent / len(values)))
+
+    params = Params()
+    n_bins = int(loudness.duration // params.bin_sec) + 1
+    level = loudness.bin_max(params.bin_sec, n_bins)
+    half = max(1, int(round(params.baseline_sec / params.bin_sec)))
+
+    line()
+    line("平常値の取り方による「跳ね」の出方:")
+    for q, label in ((0.5, "中央値"), (AUDIO_BASELINE_Q, "%.1f分位（現行）" % AUDIO_BASELINE_Q)):
+        base = rolling_quantile(level, half, q=q)
+        excess = [lv - bs for lv, bs in zip(level, base)]
+        spread = max(mad(excess), 1.0)
+        calm = sorted(excess)
+        over = sum(1 for i, e in enumerate(excess)
+                   if e / spread >= params.audio_min_z and e >= params.audio_min_db)
+        line("  %-16s ばらつき %4.1f dB / 50%%点 %5.1f dB / 90%%点 %5.1f dB / 検出 %d箇所"
+             % (label, spread, _quantile(calm, 0.5), _quantile(calm, 0.9), over))
+
+    base = rolling_quantile(level, half, q=AUDIO_BASELINE_Q)
+    excess = [lv - bs for lv, bs in zip(level, base)]
+    ranked = sorted(range(len(excess)), key=lambda i: excess[i], reverse=True)[:10]
+    line()
+    line("音量が上がった箇所 上位10件（現行の基準）:")
+    for i in sorted(ranked):
+        seconds = i * params.bin_sec
+        line("  %2d:%02d:%02d  +%.1f dB（音量 %.1f LUFS）"
+             % (seconds // 3600, seconds % 3600 // 60, seconds % 60,
+                excess[i], level[i]))
+
+
 def main():
     if len(sys.argv) < 2:
         line("使い方: python -m stream_highlight.diagnose <配信のURL>")
@@ -151,7 +205,15 @@ def main():
     line("プラットフォーム: %s / ID: %s" % (platform, video_id))
 
     info = check_metadata(url)
+    if "--audio" in sys.argv:
+        # 音量だけ見たいときは取得の確認を飛ばす
+        check_audio(platform, video_id)
+        head("おわり")
+        line("この出力をそのまま貼ってください。")
+        return 0
+
     ok = check_twitch(video_id) if platform == "twitch" else check_youtube(url)
+    check_audio(platform, video_id)
 
     head("おわり")
     line("この出力をそのまま貼ってください。")

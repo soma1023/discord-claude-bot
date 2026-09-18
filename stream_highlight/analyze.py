@@ -72,6 +72,14 @@ class Params:
 # これ未満は統計的に跳ねて見えても、切り抜く価値のある反応とは言えない。
 MIN_MOMENT_MESSAGES = 5.0
 
+# 音量の平常値に使う分位点。中央値(0.5)では無音区間に引きずられる。
+AUDIO_BASELINE_Q = 0.8
+
+# これ未満のコメント数（毎分）だと、音声とチャットの照合が成立しない。
+# 照合は「音声ピークの直後にコメントが増えたか」を見るため、
+# そもそもコメントがほとんど流れない配信では判定しようがない。
+CHAT_TOO_SPARSE_PER_MIN = 2.0
+
 
 # ------------------------------------------------------------ 数値ユーティリティ
 
@@ -106,10 +114,28 @@ def _median(sorted_values):
     return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
 
 
-def rolling_median(values, half, stride=None):
-    """移動中央値。全点で厳密に計算すると重いので、間引いて線形補間する。
+def _quantile(sorted_values, q):
+    """分位点。q=0.5 なら中央値。"""
+    n = len(sorted_values)
+    if n == 0:
+        return 0.0
+    if q <= 0:
+        return float(sorted_values[0])
+    if q >= 1:
+        return float(sorted_values[-1])
+    pos = q * (n - 1)
+    low = int(pos)
+    high = min(n - 1, low + 1)
+    frac = pos - low
+    return sorted_values[low] * (1 - frac) + sorted_values[high] * frac
 
-    平均ではなく中央値を使うのは、盛り上がり自体に平常値を引っ張られないため。
+
+def rolling_quantile(values, half, q=0.5, stride=None):
+    """移動分位点。全点で厳密に計算すると重いので、間引いて線形補間する。
+
+    平均ではなく分位点を使うのは、盛り上がり自体に平常値を引っ張られないため。
+    チャットは中央値(q=0.5)、音量は「普段の大きめの音」を基準にしたいので
+    高めの分位点を使う（無音区間に基準を引き下げられないため）。
     """
     n = len(values)
     if n == 0:
@@ -127,7 +153,7 @@ def rolling_median(values, half, stride=None):
     for i in anchors:
         lo = max(0, i - half)
         hi = min(n, i + half + 1)
-        sampled.append(_median(sorted(values[lo:hi])))
+        sampled.append(_quantile(sorted(values[lo:hi]), q))
 
     out = [0.0] * n
     for idx in range(len(anchors) - 1):
@@ -138,6 +164,10 @@ def rolling_median(values, half, stride=None):
             out[i] = va + (vb - va) * ((i - a) / span)
     out[n - 1] = sampled[-1]
     return out
+
+
+def rolling_median(values, half, stride=None):
+    return rolling_quantile(values, half, q=0.5, stride=stride)
 
 
 def mad(values):
@@ -311,7 +341,10 @@ class AudioTrack:
         self.bin_sec = timeline.bin_sec
         self.n = timeline.n
         self.level = loudness.bin_max(timeline.bin_sec, timeline.n)
-        self.baseline = rolling_median(self.level, timeline.half_baseline)
+        # 中央値だと、無音や小声の時間に引きずられて基準が下がりすぎる。
+        # 「普段しゃべっているときの音量」を基準にしたいので高めの分位点を取る。
+        self.baseline = rolling_quantile(self.level, timeline.half_baseline,
+                                         q=AUDIO_BASELINE_Q)
         self.excess = [lv - bs for lv, bs in zip(self.level, self.baseline)]
         # 1dB未満のばらつきしかない音源でスコアが暴れないよう下限を置く
         self.spread = max(mad(self.excess), 1.0)
@@ -543,6 +576,14 @@ def analyze(messages, info, params=None, max_points=1800, loudness=None):
         "superchats": len([m for m in messages if m.kind in ("paid", "sticker")]),
         "system_notices": timeline.skipped_system,
     }
+
+    # コメントが少なすぎると照合そのものが成立しない。
+    # 「0件だった」ではなく「判定できない」ことを画面に伝える。
+    if audio_payload.get("available"):
+        audio_payload["stats"]["chat_too_sparse"] = (
+            stats["per_minute"] < CHAT_TOO_SPARSE_PER_MIN
+        )
+        audio_payload["stats"]["chat_per_minute"] = stats["per_minute"]
 
     notice = ""
     if total == 0:
