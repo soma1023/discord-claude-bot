@@ -115,6 +115,37 @@ class TestServer(unittest.TestCase):
 
 
 
+    def test_export_for_editor(self):
+        """画面に出ている候補から、編集ソフト用のファイルを作れること。"""
+        self.run_job()
+        res = self.client.post("/api/export/edit", json={
+            "video_key": "youtube:%s" % DEMO_ID,
+            "peaks": [600.0, 700.0, 3000.0],
+            "fmt": "xml", "margin_sec": 300, "fps": 60,
+            "media_path": "C:\\Users\\me\\vod.mp4",
+        })
+        self.assertEqual(res.status_code, 200, res.text)
+        body = res.json()
+        self.assertTrue(body["filename"].endswith(".xml"))
+        self.assertEqual(body["segments"], 2)      # 600と700はまとまる
+        self.assertEqual(body["fps"], 60)
+        self.assertIn("xmeml", body["content"])
+        self.assertIn("file://localhost/C:/Users/me/vod.mp4", body["content"])
+
+    def test_export_edl(self):
+        self.run_job()
+        res = self.client.post("/api/export/edit", json={
+            "video_key": "youtube:%s" % DEMO_ID, "peaks": [600.0], "fmt": "edl"})
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["filename"].endswith(".edl"))
+        self.assertIn("FCM: NON-DROP FRAME", res.json()["content"])
+
+    def test_export_without_peaks_rejected(self):
+        self.run_job()
+        res = self.client.post("/api/export/edit", json={
+            "video_key": "youtube:%s" % DEMO_ID, "peaks": []})
+        self.assertEqual(res.status_code, 400)
+
     def test_index_and_assets(self):
         for path in ("/", "/static/app.js", "/static/style.css"):
             res = self.client.get(path)

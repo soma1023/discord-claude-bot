@@ -59,6 +59,7 @@ class StreamInfo:
     channel: str = ""
     duration: float = 0.0
     thumbnail: str = ""
+    fps: float = 0.0          # 編集ソフト向けの書き出しで使う
 
     def as_dict(self):
         return asdict(self)
@@ -183,6 +184,7 @@ def fetch_info(url):
         channel=payload.get("uploader") or payload.get("channel") or "",
         duration=float(payload.get("duration") or 0),
         thumbnail=payload.get("thumbnail") or "",
+        fps=float(payload.get("fps") or 0),
     )
 
 

@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cache, paths
+from . import cache, editexport, paths
 from . import code_version
 from .analyze import Params, analyze, analyze_keyword
 from .jobs import manager
@@ -29,6 +29,15 @@ class AnalyzeRequest(BaseModel):
 class ReanalyzeRequest(BaseModel):
     video_key: str
     params: dict | None = None
+
+
+class EditExportRequest(BaseModel):
+    video_key: str
+    peaks: list[float]
+    fmt: str = "xml"
+    margin_sec: float = editexport.DEFAULT_MARGIN_SEC
+    fps: float = 0.0
+    media_path: str = ""
 
 
 class KeywordRequest(BaseModel):
@@ -103,6 +112,22 @@ def quit_app():
 def capabilities():
     """動作中のコードを画面に伝える。"""
     return {"version": code_version()}
+
+
+@app.post("/api/export/edit")
+def export_for_editor(req: EditExportRequest):
+    """候補の前後を切り出したシーケンスを、編集ソフト向けに書き出す。"""
+    info, _ = _chat_or_404(req.video_key)
+    fps = req.fps or info.fps or editexport.DEFAULT_FPS
+    try:
+        filename, content, segments = editexport.export(
+            info, req.peaks, fmt=req.fmt, margin_sec=req.margin_sec,
+            fps=fps, media_path=req.media_path.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"filename": filename, "content": content,
+            "segments": segments, "fps": fps}
 
 
 @app.get("/api/history")

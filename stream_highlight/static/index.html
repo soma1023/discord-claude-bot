@@ -67,6 +67,32 @@
       </div>
     </div>
 
+    <div id="editPanel" class="panel hidden">
+      <h2>編集ソフトへ書き出す</h2>
+      <p class="muted small">
+        候補の前後を切り出したシーケンスを作ります。重なる区間はまとめるので、
+        同じ場面が何度も並びません。
+      </p>
+      <div class="edit-grid">
+        <label>ピークの前後（分）
+          <input type="number" id="editMargin" min="0.5" max="30" step="0.5" value="5">
+        </label>
+        <label>フレームレート
+          <input type="number" id="editFps" min="1" max="240" step="0.01">
+        </label>
+        <label class="wide">動画ファイルの場所（任意・入れると自動でつながります）
+          <input type="text" id="editPath" spellcheck="false"
+                 placeholder="C:\Users\somas\Videos\配信.mp4">
+        </label>
+      </div>
+      <div class="edit-actions">
+        <button id="editXmlBtn" type="button">Premiere用XMLを保存</button>
+        <button id="editEdlBtn" class="ghost" type="button">EDLを保存</button>
+        <button id="editCloseBtn" class="ghost" type="button">閉じる</button>
+        <span id="editInfo" class="muted small"></span>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="search-row">
         <input id="keywordInput" type="text" placeholder="特定のコメントで探す（例: www、かわいい、！）" spellcheck="false">
@@ -83,6 +109,7 @@
           <button id="copyBtn" class="ghost" type="button">タイムスタンプをコピー</button>
           <button id="chapterBtn" class="ghost" type="button">チャプター形式でコピー</button>
           <button id="csvBtn" class="ghost" type="button">CSV保存</button>
+          <button id="editBtn" type="button">編集ソフトへ書き出す</button>
         </div>
       </div>
       <ol id="momentList" class="moments"></ol>

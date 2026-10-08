@@ -196,6 +196,7 @@ function renderVideo(result) {
   } else {
     thumb.classList.add("hidden");
   }
+  if (!$("editFps").value) $("editFps").value = v.fps > 0 ? v.fps : 30;
   $("videoTitle").textContent = v.title || v.url;
   $("videoTitle").href = v.url;
   $("videoChannel").textContent = v.channel || "";
@@ -745,6 +746,62 @@ $("chapterBtn").onclick = (ev) => {
     });
   copyText(["0:00 オープニング", ...lines].join("\n"), ev.target, "コピーした");
 };
+
+/* --- 編集ソフトへの書き出し --- */
+
+function saveTextFile(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+$("editBtn").onclick = () => {
+  const panel = $("editPanel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    $("editInfo").textContent = `いま表示している ${state.visible.length} 件を書き出します。`;
+    panel.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+};
+$("editCloseBtn").onclick = () => $("editPanel").classList.add("hidden");
+
+async function exportForEditor(fmt) {
+  if (!state.visible.length) {
+    showError("書き出す候補がありません。");
+    return;
+  }
+  const button = fmt === "edl" ? $("editEdlBtn") : $("editXmlBtn");
+  button.disabled = true;
+  $("editInfo").textContent = "書き出し中…";
+  try {
+    const result = await api("/api/export/edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_key: state.videoKey,
+        peaks: state.visible.map((m) => m.peak_sec),
+        fmt,
+        margin_sec: parseFloat($("editMargin").value) * 60,
+        fps: parseFloat($("editFps").value) || 0,
+        media_path: $("editPath").value,
+      }),
+    });
+    saveTextFile(result.filename, result.content);
+    $("editInfo").textContent =
+      `${result.filename} を保存しました（${state.visible.length}件 → ${result.segments}区間 / ${result.fps}fps）。`;
+  } catch (err) {
+    $("editInfo").textContent = "";
+    showError(err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("editXmlBtn").onclick = () => exportForEditor("xml");
+$("editEdlBtn").onclick = () => exportForEditor("edl");
 
 $("csvBtn").onclick = () => {
   const header = ["順位", "開始", "終了", "ピーク", "秒", "倍率", "スコア", "コメ/分",
