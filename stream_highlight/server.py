@@ -148,6 +148,10 @@ def _already_running(host, port):
 
     二重起動すると「ポートが使用中」で落ちるだけで分かりにくいので、
     動いていれば新しく立ち上げず、そのブラウザを開くだけにする。
+
+    動いているものが古い版だと、更新したつもりで古い画面を見続けることに
+    なるため、見つけた版を返して呼び出し側で知らせられるようにする。
+    繋がらなければ None。
     """
     import json
     import urllib.request
@@ -155,9 +159,10 @@ def _already_running(host, port):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         with opener.open("http://%s:%d/api/capabilities" % (host, port), timeout=1.5) as resp:
-            return "version" in json.loads(resp.read().decode("utf-8"))
+            found = json.loads(resp.read().decode("utf-8"))
+        return found.get("version") or "不明"
     except Exception:      # noqa: BLE001（繋がらない＝動いていない）
-        return False
+        return None
 
 
 def main():
@@ -173,8 +178,18 @@ def main():
     shown_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = "http://%s:%d/" % (shown_host, args.port)
 
-    if _already_running(shown_host, args.port):
+    running = _already_running(shown_host, args.port)
+    if running:
+        mine = code_version()
         print("すでに起動しています: %s" % url, flush=True)
+        print("  動いている版: %s / これから起動しようとした版: %s" % (running, mine),
+              flush=True)
+        if running != mine:
+            print("  !! 古い版が動いたままです。更新を反映するには、そちらを終了して"
+                  "から起動し直してください。", flush=True)
+            print("  !! 画面右上の「終了」ボタン、または起動元のウィンドウを閉じます。"
+                  "それも無い古い版なら、タスクマネージャーで終了してください。",
+                  flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         return
