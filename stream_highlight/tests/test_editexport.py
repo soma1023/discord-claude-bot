@@ -169,5 +169,55 @@ class TestExport(unittest.TestCase):
         self.assertEqual(count, 2)
 
 
+class TestResolution(unittest.TestCase):
+    """シーケンスの解像度。書き忘れると Premiere が既定値で作ってしまう。"""
+
+    def sequence_size(self, xml_text):
+        sc = parse(xml_text).find("sequence/media/video/format/samplecharacteristics")
+        return sc.findtext("width"), sc.findtext("height")
+
+    def test_written_into_sequence_format(self):
+        xml = to_fcp7_xml(INFO, build_segments([1800], 300, INFO.duration),
+                          fps=60, width=1920, height=1080)
+        self.assertEqual(self.sequence_size(xml), ("1920", "1080"))
+
+    def test_written_into_source_file(self):
+        """素材側にも書く。片方だけだと読み込み後に合わない。"""
+        xml = to_fcp7_xml(INFO, build_segments([1800], 300, INFO.duration),
+                          fps=60, media_path="C:\\v\\a.mp4", width=1280, height=720)
+        sc = parse(xml).find(
+            "sequence/media/video/track/clipitem/file/media/video/samplecharacteristics")
+        self.assertEqual((sc.findtext("width"), sc.findtext("height")), ("1280", "720"))
+
+    def test_format_comes_before_track(self):
+        """format は track より前に置く。順序が逆だと読めない。"""
+        video = parse(to_fcp7_xml(INFO, build_segments([1800], 300, INFO.duration),
+                                  fps=60)).find("sequence/media/video")
+        tags = [child.tag for child in video]
+        self.assertLess(tags.index("format"), tags.index("track"))
+
+    def test_taken_from_the_stream_when_not_given(self):
+        probed = StreamInfo("twitch", "1", "u", duration=9000.0,
+                            fps=60.0, width=2560, height=1440)
+        _, xml, _ = export(probed, [1800.0], fps=60)
+        self.assertEqual(self.sequence_size(xml), ("2560", "1440"))
+
+    def test_explicit_value_wins_over_the_stream(self):
+        """手元のファイルが配信と違う解像度のことがあるので、指定を優先する。"""
+        probed = StreamInfo("twitch", "1", "u", duration=9000.0,
+                            fps=60.0, width=2560, height=1440)
+        _, xml, _ = export(probed, [1800.0], fps=60, width=1920, height=1080)
+        self.assertEqual(self.sequence_size(xml), ("1920", "1080"))
+
+    def test_falls_back_to_1080p(self):
+        unknown = StreamInfo("twitch", "1", "u", duration=9000.0)
+        _, xml, _ = export(unknown, [1800.0])
+        self.assertEqual(self.sequence_size(xml), ("1920", "1080"))
+
+    def test_vertical_video(self):
+        _, xml, _ = export(INFO, [1800.0], width=1080, height=1920)
+        self.assertEqual(self.sequence_size(xml), ("1080", "1920"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

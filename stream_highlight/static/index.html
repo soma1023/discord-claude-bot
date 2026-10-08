@@ -72,6 +72,8 @@
       <p class="muted small">
         候補の前後を切り出したシーケンスを作ります。重なる区間はまとめるので、
         同じ場面が何度も並びません。
+        <b>フレームレートと解像度は、手元の動画ファイルと同じ値にしてください。</b>
+        ここがシーケンスの設定になります。
       </p>
       <div class="edit-grid">
         <label>ピークの前後（分）
@@ -79,6 +81,12 @@
         </label>
         <label>フレームレート
           <input type="number" id="editFps" min="1" max="240" step="0.01">
+        </label>
+        <label>解像度（横）
+          <input type="number" id="editWidth" min="16" max="7680" step="2">
+        </label>
+        <label>解像度（縦）
+          <input type="number" id="editHeight" min="16" max="4320" step="2">
         </label>
         <label class="wide">動画ファイルの場所（任意・入れると自動でつながります）
           <input type="text" id="editPath" spellcheck="false"

@@ -103,6 +103,12 @@ python -m stream_highlight.diagnose <VODのURL>
 - 起動バッチが、原因を問わず「Pythonが入っているか確認してください」と誤案内
 - Twitchのnull応答で `AttributeError` → 解析全体が失敗
 - チャットログの入れ子nullで落ちる箇所を全面的に防御（1行の崩れで全体を落とさない）
+- **書き出したXMLの解像度が違う**
+  `samplecharacteristics`（解像度）を書いていなかったため、Premiere が
+  シーケンスを自前の既定値で作っていた。シーケンス側（`video/format`）と
+  素材側（`file/media/video`）の両方に書く。`format` は `track` より前。
+  配信から取れた解像度を初期値にし、手元のファイルと違う場合に備えて
+  画面から直せるようにした（配信1440pでも1080pで落とすことがある）。
 - **更新と無関係なファイルを触っただけで、自動更新が永久に止まる**
   起動側で `git diff --quiet` を見て止めていたため、`bot.py` を編集しただけで
   更新が入らなくなっていた。`git pull --ff-only` は上書きするファイルが

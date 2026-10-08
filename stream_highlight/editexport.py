@@ -4,9 +4,12 @@
 長い配信をそのまま編集ソフトに乗せると、結局スクラブして探すことになる。
 候補の前後だけを切り出したシーケンスを作っておけば、編集はその中だけで済む。
 
-Premiere は FCP7 XML（.xml）と EDL を読み込める。XML は動画ファイルの場所まで
-書けるので自動でつながるが、形式が厳密。EDL は素材を手動でつなぐ代わりに
-どの編集ソフトでも通る。両方出せるようにしてある。
+Premiere は FCP7 XML（.xml）と EDL を読み込める。XML は動画ファイルの場所と
+解像度まで書けるので自動でつながるが、形式が厳密。EDL は素材を手動でつなぐ
+代わりにどの編集ソフトでも通る。両方出せるようにしてある。
+
+解像度を書き忘れると、Premiere はシーケンスを自前の既定値で作ってしまい、
+1080pの配信を読み込んだのに別の解像度のシーケンスができる。
 """
 
 import posixpath
@@ -16,6 +19,8 @@ from xml.dom import minidom
 
 DEFAULT_MARGIN_SEC = 300.0      # ピークの前後5分
 DEFAULT_FPS = 30.0
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 1080
 
 
 def _file_name(media_path, fallback):
@@ -80,8 +85,27 @@ def _rate(parent, fps):
     return rate
 
 
-def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path=""):
+def _sample_characteristics(parent, fps, width, height):
+    """映像の素性（解像度・フレームレート）を書く。
+
+    これを省くと、Premiere はシーケンスの解像度を自前の既定値で作ってしまう。
+    1080pの配信を読み込んでも別の解像度になり、書き出した動画がおかしくなる。
+    """
+    sc = ET.SubElement(parent, "samplecharacteristics")
+    _rate(sc, fps)
+    ET.SubElement(sc, "width").text = str(int(width))
+    ET.SubElement(sc, "height").text = str(int(height))
+    ET.SubElement(sc, "anamorphic").text = "FALSE"
+    ET.SubElement(sc, "pixelaspectratio").text = "square"
+    ET.SubElement(sc, "fielddominance").text = "none"
+    return sc
+
+
+def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
+                width=0, height=0):
     """Premiere が読み込める FCP7 XML を組み立てる。"""
+    width = int(width or info.width or DEFAULT_WIDTH)
+    height = int(height or info.height or DEFAULT_HEIGHT)
     name = (info.title or info.video_id or "highlights").strip()
     file_name = _file_name(media_path, "%s.mp4" % info.video_id)
     source_frames = _frames(info.duration or 0, fps) or 1
@@ -95,6 +119,8 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path=""):
     media = ET.SubElement(sequence, "media")
 
     video = ET.SubElement(media, "video")
+    # シーケンスの解像度は format で決まる。track より前に置く必要がある。
+    _sample_characteristics(ET.SubElement(video, "format"), fps, width, height)
     video_track = ET.SubElement(video, "track")
 
     audio = ET.SubElement(media, "audio")
@@ -128,8 +154,9 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path=""):
                 _rate(file_el, fps)
                 ET.SubElement(file_el, "duration").text = str(source_frames)
                 file_media = ET.SubElement(file_el, "media")
-                ET.SubElement(ET.SubElement(file_media, "video"), "duration").text = \
-                    str(source_frames)
+                file_video = ET.SubElement(file_media, "video")
+                ET.SubElement(file_video, "duration").text = str(source_frames)
+                _sample_characteristics(file_video, fps, width, height)
                 file_audio = ET.SubElement(file_media, "audio")
                 ET.SubElement(file_audio, "channelcount").text = "2"
                 first_file = False
@@ -181,7 +208,7 @@ def to_edl(info, segments, fps=DEFAULT_FPS, media_path=""):
 
 
 def export(info, peaks, fmt="xml", margin_sec=DEFAULT_MARGIN_SEC,
-           fps=DEFAULT_FPS, media_path=""):
+           fps=DEFAULT_FPS, media_path="", width=0, height=0):
     """書き出し一式。(ファイル名, 中身, 区間の数) を返す。"""
     fps = float(fps) or DEFAULT_FPS
     segments = build_segments(peaks, margin_sec, info.duration)
@@ -192,4 +219,6 @@ def export(info, peaks, fmt="xml", margin_sec=DEFAULT_MARGIN_SEC,
                    if c not in '\\/:*?"<>|').strip()[:50] or "highlights"
     if fmt == "edl":
         return "%s.edl" % safe, to_edl(info, segments, fps, media_path), len(segments)
-    return "%s.xml" % safe, to_fcp7_xml(info, segments, fps, media_path), len(segments)
+    return ("%s.xml" % safe,
+            to_fcp7_xml(info, segments, fps, media_path, width, height),
+            len(segments))

@@ -56,6 +56,8 @@ class EditExportRequest(BaseModel):
     margin_sec: float = editexport.DEFAULT_MARGIN_SEC
     fps: float = 0.0
     media_path: str = ""
+    width: int = 0
+    height: int = 0
 
 
 class KeywordRequest(BaseModel):
@@ -142,15 +144,18 @@ def export_for_editor(req: EditExportRequest):
     """候補の前後を切り出したシーケンスを、編集ソフト向けに書き出す。"""
     info, _ = _chat_or_404(req.video_key)
     fps = req.fps or info.fps or editexport.DEFAULT_FPS
+    width = req.width or info.width or editexport.DEFAULT_WIDTH
+    height = req.height or info.height or editexport.DEFAULT_HEIGHT
     try:
         filename, content, segments = editexport.export(
             info, req.peaks, fmt=req.fmt, margin_sec=req.margin_sec,
             fps=fps, media_path=req.media_path.strip(),
+            width=width, height=height,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"filename": filename, "content": content,
-            "segments": segments, "fps": fps}
+    return {"filename": filename, "content": content, "segments": segments,
+            "fps": fps, "width": width, "height": height}
 
 
 @app.get("/api/history")

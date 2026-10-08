@@ -196,7 +196,10 @@ function renderVideo(result) {
   } else {
     thumb.classList.add("hidden");
   }
+  // シーケンス設定になる値。配信から取れた素性を初期値にして、直せるようにする。
   if (!$("editFps").value) $("editFps").value = v.fps > 0 ? v.fps : 30;
+  if (!$("editWidth").value) $("editWidth").value = v.width > 0 ? v.width : 1920;
+  if (!$("editHeight").value) $("editHeight").value = v.height > 0 ? v.height : 1080;
   $("videoTitle").textContent = v.title || v.url;
   $("videoTitle").href = v.url;
   $("videoChannel").textContent = v.channel || "";
@@ -787,11 +790,14 @@ async function exportForEditor(fmt) {
         margin_sec: parseFloat($("editMargin").value) * 60,
         fps: parseFloat($("editFps").value) || 0,
         media_path: $("editPath").value,
+        width: parseInt($("editWidth").value, 10) || 0,
+        height: parseInt($("editHeight").value, 10) || 0,
       }),
     });
     saveTextFile(result.filename, result.content);
     $("editInfo").textContent =
-      `${result.filename} を保存しました（${state.visible.length}件 → ${result.segments}区間 / ${result.fps}fps）。`;
+      `${result.filename} を保存しました（${state.visible.length}件 → ${result.segments}区間 / ` +
+      `${result.width}x${result.height} / ${result.fps}fps）。`;
   } catch (err) {
     $("editInfo").textContent = "";
     showError(err.message);

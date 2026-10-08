@@ -148,6 +148,18 @@ class TestServer(unittest.TestCase):
         self.assertTrue(res.json()["filename"].endswith(".edl"))
         self.assertIn("FCM: NON-DROP FRAME", res.json()["content"])
 
+    def test_export_reports_sequence_settings(self):
+        """何の設定で書き出したかを返すこと。画面で確かめられるように。"""
+        self.run_job()
+        res = self.client.post("/api/export/edit", json={
+            "video_key": "youtube:%s" % DEMO_ID, "peaks": [600.0],
+            "fps": 60, "width": 2560, "height": 1440,
+        })
+        body = res.json()
+        self.assertEqual((body["width"], body["height"], body["fps"]),
+                         (2560, 1440, 60))
+        self.assertIn("<width>2560</width>", body["content"])
+
     def test_export_without_peaks_rejected(self):
         self.run_job()
         res = self.client.post("/api/export/edit", json={

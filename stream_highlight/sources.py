@@ -59,7 +59,11 @@ class StreamInfo:
     channel: str = ""
     duration: float = 0.0
     thumbnail: str = ""
-    fps: float = 0.0          # 編集ソフト向けの書き出しで使う
+    # 以下は編集ソフト向けの書き出しで使う。シーケンス設定がこれで決まるため、
+    # 取れなかった場合は書き出し時に指定させる。
+    fps: float = 0.0
+    width: int = 0
+    height: int = 0
 
     def as_dict(self):
         return asdict(self)
@@ -185,6 +189,8 @@ def fetch_info(url):
         duration=float(payload.get("duration") or 0),
         thumbnail=payload.get("thumbnail") or "",
         fps=float(payload.get("fps") or 0),
+        width=int(payload.get("width") or 0),
+        height=int(payload.get("height") or 0),
     )
 
 
