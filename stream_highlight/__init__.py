@@ -6,26 +6,26 @@ __version__ = "0.1.0"
 import os
 
 
-def code_version():
-    """いま動いているコードがどのコミットかを返す。
-
-    サーバを再起動し忘れると、画面だけ新しくコードが古いという状態になり、
-    原因の切り分けが難しくなる。画面に出して一目で分かるようにする。
-    """
+def _read_build_id():
+    """exe化したときに埋め込まれるファイルから版を読む。"""
     from . import paths
 
-    # exe化したときは .git が無いので、ビルド時に埋め込んだIDを使う
     for base in (paths.bundle_dir(), os.path.dirname(os.path.abspath(__file__))):
         stamp = os.path.join(base, "_build_id.txt")
-        if os.path.exists(stamp):
-            try:
-                with open(stamp, encoding="utf-8") as fh:
-                    value = fh.read().strip()
-                if value:
-                    return value
-            except OSError:
-                pass
+        if not os.path.exists(stamp):
+            continue
+        try:
+            with open(stamp, encoding="utf-8") as fh:
+                value = fh.read().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    return ""
 
+
+def _read_git_head():
+    """リポジトリから、いまチェックアウトしている版を読む。"""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     git = os.path.join(root, ".git")
     try:
@@ -45,4 +45,21 @@ def code_version():
                     return line.split(" ", 1)[0][:7]
     except OSError:
         pass
-    return __version__
+    return ""
+
+
+def code_version():
+    """いま動いているコードがどのコミットかを返す。
+
+    サーバを再起動し忘れると、画面だけ新しくコードが古いという状態になり、
+    原因の切り分けが難しくなる。画面に出して一目で分かるようにする。
+
+    リポジトリから動かしているときは .git が正しい。
+    exeのビルド時に作られる _build_id.txt はビルド後も残るため、
+    これを優先すると、更新しても古い版を表示し続けてしまう。
+    """
+    from . import paths
+
+    if paths.is_frozen():
+        return _read_build_id() or __version__
+    return _read_git_head() or _read_build_id() or __version__

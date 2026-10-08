@@ -36,6 +36,9 @@ if errorlevel 1 goto FAIL
 REM 中間ファイルは完成後に要らない。--clean を付けているので
 REM 次回のビルドでも再利用されず、置いておくと場所を取るだけ。
 if exist build rmdir /s /q build
+REM 同梱済みなので手元には残さない。残すとリポジトリから起動したときに
+REM 古い版として表示されてしまう。
+if exist stream_highlight\_build_id.txt del stream_highlight\_build_id.txt
 
 echo.
 echo ============================================================
