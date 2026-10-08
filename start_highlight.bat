@@ -7,6 +7,20 @@ REM --silent を付けて呼ばれたときは、一時停止せずに終わる�
 set "QUIET="
 if /i "%~1"=="--silent" set "QUIET=1"
 
+REM 非表示で動かすと画面に何も出ないので、自分でログを取る。
+REM 呼び出し側に書き出しを任せると、起動方法ごとに書き方が増えて壊れやすい。
+REM SH_LOGGING は二重に潜らないための目印。
+if defined QUIET if not defined SH_LOGGING (
+    set "SH_LOGGING=1"
+    if not exist "%~dp0stream_highlight" mkdir "%~dp0stream_highlight"
+    call "%~f0" --silent >> "%~dp0stream_highlight\app.log" 2>&1
+    exit /b
+)
+
+REM git が認証を聞いてくると、非表示のまま永久に待ち続けて「開かない」になる。
+REM 聞かずに失敗させて、ログに残す。
+set "GIT_TERMINAL_PROMPT=0"
+
 if not defined QUIET echo 配信ハイライト抽出ツールを起動します...
 if not defined QUIET echo.
 
@@ -56,6 +70,7 @@ if not defined QUIET echo.
 if errorlevel 1 (
     echo.
     echo サーバーが異常終了しました。上のエラーを確認してください。
+    if defined QUIET call :ALERT
 )
 if not defined QUIET pause
 exit /b 0
@@ -73,6 +88,7 @@ echo.
 echo  どちらもエラーになる場合は https://www.python.org/downloads/
 echo  からインストールし、"Add python.exe to PATH" に必ずチェックを入れてください。
 echo ============================================================
+if defined QUIET call :ALERT
 if not defined QUIET pause
 exit /b 1
 
@@ -87,6 +103,7 @@ echo.
 echo      git fetch origin
 echo      git checkout claude/stream-highlight-extractor-lzeupt
 echo ============================================================
+if defined QUIET call :ALERT
 if not defined QUIET pause
 exit /b 1
 
@@ -97,6 +114,7 @@ echo  pip が使えません。次を実行してから、もう一度お試し�
 echo.
 echo      %PY% -m ensurepip --upgrade
 echo ============================================================
+if defined QUIET call :ALERT
 if not defined QUIET pause
 exit /b 1
 
@@ -113,6 +131,7 @@ echo.
 echo  保存先: %CD%\install_error.log
 echo  このファイルの中身を貼ってもらえれば原因が分かります。
 echo ============================================================
+if defined QUIET call :ALERT
 if not defined QUIET pause
 exit /b 1
 
@@ -126,5 +145,11 @@ echo.
 echo      %PY% -c "import sys; print(sys.executable)"
 echo      %PY% -m pip list
 echo ============================================================
+if defined QUIET call :ALERT
 if not defined QUIET pause
 exit /b 1
+
+:ALERT
+REM 非表示起動では画面に何も出ないため、ログをメモ帳で開いて気づけるようにする。
+start "" notepad "%~dp0stream_highlight\app.log"
+exit /b 0

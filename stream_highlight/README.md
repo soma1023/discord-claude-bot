@@ -8,17 +8,23 @@ YouTube と Twitch のアーカイブに対応。
 
 ## 使い方
 
-起動のしかたは2通りある。用途で選ぶ。
+起動のしかたは用途で選ぶ。
 
 | 起動方法 | 更新 | 黒い画面 | Python |
 | --- | --- | --- | --- |
-| **`start_highlight_silent.vbs`**（おすすめ） | 起動のたびに自動 | 出ない | 要 |
-| `start_highlight.bat` | 起動のたびに自動 | 出る | 要 |
+| **`start_hidden.cmd`**（おすすめ） | 起動のたびに自動 | 出ない | 要 |
+| `start_highlight.bat` | 起動のたびに自動 | 出る（原因を読むとき用） | 要 |
+| `start_highlight_silent.vbs` | 起動のたびに自動 | 出ない | 要 |
 | `StreamHighlight.exe`（exe化したもの） | **されない** | 出ない | 不要 |
 
-**開発中は `start_highlight_silent.vbs` が楽。** 起動のたびに `git pull` で
+**開発中は `start_hidden.cmd` が楽。** 起動のたびに `git pull` で
 最新になるので、更新のたびに作り直す必要がない。
 デスクトップにショートカットを作っておくとよい。
+
+`start_highlight_silent.vbs` は同じことを VBScript でやる古い形。
+**Windows 11 では VBScript が段階的に無効化されており、ダブルクリックしても
+何も起きないことがある。** そうなったら `start_hidden.cmd` を使う
+（中身は PowerShell なので影響を受けない）。
 
 exe は「Pythonの無いPCでも動く」「フォルダごと持ち運べる」ための形。
 作った時点のコードで固まるので、更新するには `build_exe.bat` で作り直す。
@@ -27,15 +33,17 @@ exe は「Pythonの無いPCでも動く」「フォルダごと持ち運べる�
 
 手動で起動する場合:
 
-手動で起動する場合:
-
 ```
 pip install -r stream_highlight/requirements.txt
 python -m stream_highlight.server
 ```
 
-`start_highlight_silent.vbs` は画面を出さずに動くので、うまく起動しないときは
-`stream_highlight\app.log` を見る。
+画面を出さない起動（`start_hidden.cmd` / `.vbs`）では、失敗しても何も見えない。
+そのため `stream_highlight\app.log` に必ず書き出し、失敗したときは
+そのログをメモ帳で開くようにしてある。
+
+それでも分からないときは `start_highlight.bat` を直接ダブルクリックする。
+黒い画面は出るが、どこで止まったかがそのまま読める。
 
 ブラウザで URL を貼って「解析」を押すと、
 
