@@ -125,23 +125,16 @@ def _startup_update():
     root = os.path.dirname(os.path.abspath(__file__))
 
     if os.path.isdir(os.path.join(root, ".git")):
-        ok, _ = _run(["git", "-C", root, "diff", "--quiet"], timeout=60)
-        if not ok:
-            # 「変更があるので更新しません」だけでは手が止まる。
-            # 何が邪魔をしているのかまで書く。
-            _, dirty = _run(["git", "-C", root, "status", "--porcelain",
-                             "--untracked-files=no"], timeout=60)
-            names = [line.strip() for line in dirty.splitlines() if line.strip()]
-            print("手元に変更があるため、更新は取り込みません。"
-                  "邪魔をしているのは %d件:" % len(names), flush=True)
-            for name in names[:10]:
-                print("    %s" % name, flush=True)
-            if len(names) > 10:
-                print("    ...ほか %d件" % (len(names) - 10), flush=True)
-            print("  元に戻してよければ: git checkout -- .", flush=True)
-        else:
-            ok, out = _run(["git", "-C", root, "pull", "--ff-only"], timeout=180)
-            print("更新: %s" % (out or ("成功" if ok else "失敗")), flush=True)
+        # 手元に変更があるかを自分で調べて止める、ということはしない。
+        # git pull --ff-only は、上書きしてしまうファイルがあるときだけ
+        # 失敗し、そのファイル名まで教えてくれる。自分で先回りして止めると、
+        # 更新と無関係なファイル（bot.py など）を触っただけで
+        # 永久に更新が入らなくなる。判断は git に任せる。
+        ok, out = _run(["git", "-C", root, "pull", "--ff-only"], timeout=180)
+        print("更新: %s" % ("成功" if ok else "失敗"), flush=True)
+        if out:
+            for line in out.splitlines():
+                print("    %s" % line, flush=True)
 
     try:
         import fastapi, uvicorn, yt_dlp      # noqa: F401
