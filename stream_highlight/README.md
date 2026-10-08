@@ -8,8 +8,24 @@ YouTube と Twitch のアーカイブに対応。
 
 ## 使い方
 
-`start_highlight.bat` をダブルクリックすると、必要なライブラリを入れて
-サーバを立ち上げ、ブラウザが開く。
+起動のしかたは2通りある。用途で選ぶ。
+
+| 起動方法 | 更新 | 黒い画面 | Python |
+| --- | --- | --- | --- |
+| **`start_highlight_silent.vbs`**（おすすめ） | 起動のたびに自動 | 出ない | 要 |
+| `start_highlight.bat` | 起動のたびに自動 | 出る | 要 |
+| `StreamHighlight.exe`（exe化したもの） | **されない** | 出ない | 不要 |
+
+**開発中は `start_highlight_silent.vbs` が楽。** 起動のたびに `git pull` で
+最新になるので、更新のたびに作り直す必要がない。
+デスクトップにショートカットを作っておくとよい。
+
+exe は「Pythonの無いPCでも動く」「フォルダごと持ち運べる」ための形。
+作った時点のコードで固まるので、更新するには `build_exe.bat` で作り直す。
+
+手元に編集中の変更があるときは、自動更新は行わない（上書きしないため）。
+
+手動で起動する場合:
 
 手動で起動する場合:
 
@@ -17,6 +33,9 @@ YouTube と Twitch のアーカイブに対応。
 pip install -r stream_highlight/requirements.txt
 python -m stream_highlight.server
 ```
+
+`start_highlight_silent.vbs` は画面を出さずに動くので、うまく起動しないときは
+`stream_highlight\app.log` を見る。
 
 ブラウザで URL を貼って「解析」を押すと、
 

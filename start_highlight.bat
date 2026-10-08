@@ -3,17 +3,33 @@ chcp 65001 > nul
 cd /d "%~dp0"
 title 配信ハイライト抽出ツール
 
-echo 配信ハイライト抽出ツールを起動します...
-echo.
-echo ※ git pull で更新したあとは、必ずこのウィンドウを閉じて起動し直してください。
-echo    画面(ブラウザ)だけ更新しても、解析の処理は古いままになります。
-echo.
+REM --silent を付けて呼ばれたときは、一時停止せずに終わる（非表示起動用）
+set "QUIET="
+if /i "%~1"=="--silent" set "QUIET=1"
+
+if not defined QUIET echo 配信ハイライト抽出ツールを起動します...
+if not defined QUIET echo.
 
 REM --- Python を探す（python → py の順で試す） ---
 set "PY="
 python --version >nul 2>&1 && set "PY=python"
 if not defined PY py --version >nul 2>&1 && set "PY=py"
 if not defined PY goto NOPYTHON
+
+REM --- 更新があれば取り込む ---
+git rev-parse --git-dir >nul 2>&1
+if errorlevel 1 goto SKIPPULL
+git diff --quiet
+if errorlevel 1 goto DIRTY
+echo 更新を確認しています...
+git pull --ff-only
+goto SKIPPULL
+
+:DIRTY
+echo 手元に変更があるため、更新の取り込みは行いません。
+echo （元に戻すには git stash を実行してください）
+
+:SKIPPULL
 
 REM --- 必要なファイルが揃っているか ---
 if not exist "stream_highlight\requirements.txt" goto NOFILES
@@ -31,18 +47,17 @@ echo.
 %PY% -m pip install -r stream_highlight\requirements.txt
 if errorlevel 1 goto PIPFAIL
 
-REM --- インストール直後にもう一度確認する ---
 %PY% -c "import fastapi, uvicorn, yt_dlp" >nul 2>&1
 if errorlevel 1 goto IMPORTFAIL
 
 :RUN
-echo.
+if not defined QUIET echo.
 %PY% -m stream_highlight.server
 if errorlevel 1 (
     echo.
     echo サーバーが異常終了しました。上のエラーを確認してください。
 )
-pause
+if not defined QUIET pause
 exit /b 0
 
 
@@ -50,8 +65,6 @@ exit /b 0
 echo ============================================================
 echo  Python が見つかりませんでした。
 echo.
-echo  このPCにはボット用のPythonが入っているはずなので、
-echo  PATHが通っていない可能性があります。
 echo  コマンドプロンプトで次を試してください:
 echo.
 echo      python --version
@@ -60,7 +73,7 @@ echo.
 echo  どちらもエラーになる場合は https://www.python.org/downloads/
 echo  からインストールし、"Add python.exe to PATH" に必ずチェックを入れてください。
 echo ============================================================
-pause
+if not defined QUIET pause
 exit /b 1
 
 
@@ -74,7 +87,7 @@ echo.
 echo      git fetch origin
 echo      git checkout claude/stream-highlight-extractor-lzeupt
 echo ============================================================
-pause
+if not defined QUIET pause
 exit /b 1
 
 
@@ -84,7 +97,7 @@ echo  pip が使えません。次を実行してから、もう一度お試し�
 echo.
 echo      %PY% -m ensurepip --upgrade
 echo ============================================================
-pause
+if not defined QUIET pause
 exit /b 1
 
 
@@ -99,12 +112,8 @@ echo  詳しいログを install_error.log に保存します...
 echo.
 echo  保存先: %CD%\install_error.log
 echo  このファイルの中身を貼ってもらえれば原因が分かります。
-echo.
-echo  よくある原因:
-echo   - ネットワーク / プロキシで接続がブロックされている
-echo   - pip が古い（%PY% -m pip install --upgrade pip で更新できます）
 echo ============================================================
-pause
+if not defined QUIET pause
 exit /b 1
 
 
@@ -114,10 +123,8 @@ echo ============================================================
 echo  インストールは終わりましたが、ライブラリを読み込めませんでした。
 echo  複数のPythonが入っていて、別の環境に入った可能性があります。
 echo.
-echo  次の出力を貼ってもらえれば分かります:
-echo.
 echo      %PY% -c "import sys; print(sys.executable)"
 echo      %PY% -m pip list
 echo ============================================================
-pause
+if not defined QUIET pause
 exit /b 1

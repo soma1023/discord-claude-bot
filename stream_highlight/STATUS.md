@@ -128,11 +128,10 @@ yt-dlpの自己呼び出し・終了ボタン・二重起動の回避）。
 
 ## 手元での動かし方
 
-```
-cd /d C:\Users\somas\discord-claude-bot
-git pull
-start_highlight.bat
-```
+`start_highlight_silent.vbs` をダブルクリック。起動のたびに `git pull` で
+最新になり、黒い画面も出ない。うまく動かないときは `stream_highlight\app.log`。
+
+exe 版は作った時点で固まるので、更新には `build_exe.bat` での作り直しが要る。
 
 Python 3.10 / pip は導入済みであることを確認済み。
 
