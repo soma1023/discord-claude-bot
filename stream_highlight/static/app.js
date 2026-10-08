@@ -866,6 +866,15 @@ async function loadCapabilities() {
       // サーバを再起動し忘れると画面だけ新しくなるので、動作中の版を出しておく
       $("codeVersion").textContent = caps.version;
     }
+    if (caps.restart_needed) {
+      // 更新は取り込まれているが、動いているのは古いコード
+      $("versionHint").innerHTML =
+        ` → <b style="color:var(--danger)">${caps.on_disk} に更新されています。` +
+        `開き直してください。</b>`;
+      showError(
+        `更新が取り込まれていますが、動いているのは古いコード（${caps.version}）です。` +
+        `start_highlight_silent.vbs を開き直すと、新しい版に入れ替わります。`);
+    }
   } catch (err) {
     /* 判定できなければ触らずそのままにする */
   }

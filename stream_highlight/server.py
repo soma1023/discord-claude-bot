@@ -17,6 +17,12 @@ from .sources import FetchError
 
 STATIC_DIR = paths.static_dir()
 
+# 起動した時点の版を控えておく。
+# code_version() はその場でディスクを読むため、起動後に git pull すると
+# 「動いている版」ではなく「ディスク上の版」を答えてしまう。
+# それでは再起動の要否が分からないので、ここで確定させる。
+RUNNING_VERSION = code_version()
+
 app = FastAPI(title="配信ハイライト抽出", docs_url=None, redoc_url=None)
 
 
@@ -122,8 +128,13 @@ def quit_app():
 
 @app.get("/api/capabilities")
 def capabilities():
-    """動作中のコードを画面に伝える。"""
-    return {"version": code_version()}
+    """動作中のコードと、ディスク上の版を画面に伝える。
+
+    2つが違う場合は、更新が取り込まれているのに再起動していない状態。
+    """
+    on_disk = code_version()
+    return {"version": RUNNING_VERSION, "on_disk": on_disk,
+            "restart_needed": on_disk != RUNNING_VERSION}
 
 
 @app.post("/api/export/edit")
@@ -161,9 +172,10 @@ def _already_running(host, port):
     二重起動すると「ポートが使用中」で落ちるだけで分かりにくいので、
     動いていれば新しく立ち上げず、そのブラウザを開くだけにする。
 
-    動いているものが古い版だと、更新したつもりで古い画面を見続けることに
-    なるため、見つけた版を返して呼び出し側で知らせられるようにする。
-    繋がらなければ None。
+    返すのは /api/capabilities の中身そのまま。繋がらなければ None。
+    on_disk の項目が無ければ、相手は「動いている版」を答えられない古い版
+    （その場でディスクを読んで答えるので、更新後は嘘の版を返す）。
+    呼び出し側はその版表示を信用してはいけない。
     """
     import json
     import urllib.request
@@ -172,9 +184,41 @@ def _already_running(host, port):
     try:
         with opener.open("http://%s:%d/api/capabilities" % (host, port), timeout=1.5) as resp:
             found = json.loads(resp.read().decode("utf-8"))
-        return found.get("version") or "不明"
     except Exception:      # noqa: BLE001（繋がらない＝動いていない）
         return None
+    return found if isinstance(found, dict) else {}
+
+
+def _stop_running(host, port, wait_sec=10.0, bind_host=None):
+    """動いているサーバに終了を頼み、ポートが空くまで待つ。
+
+    古い版が動いたまま別のポートで立ち上げると、ブックマークや
+    開いたままのタブから古い画面を見続けることになる。実際にそれで
+    「更新したのに新しい機能が出ない」という取り違えが起きたので、
+    古い方を終わらせて同じポートを引き継ぐ。
+
+    空いたかどうかは実際に bind して確かめる。HTTPの返事が無いことを
+    根拠にすると、応答しないまま居座っているプロセスを「居ない」と
+    見なしてしまい、この後の起動が「ポート使用中」で落ちる。
+
+    止められたら True。
+    """
+    import time
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request("http://%s:%d/api/quit" % (host, port), method="POST")
+    try:
+        opener.open(req, timeout=3.0).read()
+    except Exception:      # noqa: BLE001（終了要求が通らない版もある）
+        pass
+
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        time.sleep(0.3)
+        if _port_is_free(bind_host or host, port):
+            return True
+    return False
 
 
 def _port_is_free(host, port):
@@ -205,33 +249,43 @@ def main():
     mine = code_version()
     running = _already_running(shown_host, args.port)
 
-    if running == mine:
-        # 同じ版が動いているなら、二重に立ち上げずそれを開く
-        print("すでに起動しています: %s" % url, flush=True)
-        if not args.no_browser:
-            webbrowser.open(url)
-        return
+    if running is not None:
+        trustworthy = "on_disk" in running
+        theirs = running.get("version") or "不明"
 
-    if running:
-        # 古い版が動いたままでも、更新した版を使えるようにする。
-        # ここで起動をやめると、更新したのに古い画面を見続けることになる。
-        print("別の版が動いています（%s）。更新した版（%s）を別のポートで起動します。"
-              % (running, mine), flush=True)
-        for candidate in range(args.port + 1, args.port + 21):
-            if _already_running(shown_host, candidate) is None and \
-                    _port_is_free(args.host, candidate):
-                args.port = candidate
-                url = "http://%s:%d/" % (shown_host, args.port)
-                break
-        else:
-            print("空いているポートが見つかりませんでした。"
-                  "動いている方を終了してから起動し直してください。", flush=True)
+        if trustworthy and theirs == mine:
+            # 同じ版が動いているなら、二重に立ち上げずそれを開く
+            print("すでに起動しています: %s" % url, flush=True)
+            if not args.no_browser:
+                webbrowser.open(url)
             return
-        print("古い方は不要なら終了してください"
-              "（画面右上の「終了」ボタン、またはタスクマネージャー）。", flush=True)
+
+        if trustworthy:
+            print("古い版（%s）が動いています。終了させて、更新した版（%s）に"
+                  "入れ替えます。" % (theirs, mine), flush=True)
+        else:
+            # 版を答えられない古い版。表示を信用できないので、中身に関わらず
+            # 入れ替える（同じ版だったとしても、入れ替えて困ることはない）。
+            print("動いている版を確かめられませんでした。終了させて、"
+                  "更新した版（%s）に入れ替えます。" % mine, flush=True)
+
+        if not _stop_running(shown_host, args.port, bind_host=args.host):
+            # 終了を頼めなかったので、せめて更新した版を使えるようにする
+            print("動いている方を終了できませんでした。別のポートで起動します。"
+                  "古い画面のタブは閉じてください。", flush=True)
+            for candidate in range(args.port + 1, args.port + 21):
+                if _already_running(shown_host, candidate) is None and \
+                        _port_is_free(args.host, candidate):
+                    args.port = candidate
+                    url = "http://%s:%d/" % (shown_host, args.port)
+                    break
+            else:
+                print("空いているポートが見つかりませんでした。"
+                      "動いている方を終了してから起動し直してください。", flush=True)
+                return
 
     print("配信ハイライト抽出ツール: %s" % url, flush=True)
-    print("動作中のコード: %s" % code_version(), flush=True)
+    print("動作中のコード: %s" % RUNNING_VERSION, flush=True)
     print("保存先: %s" % paths.data_dir(), flush=True)
 
     # 音声解析をやめた時に読まれなくなったファイルを片付ける

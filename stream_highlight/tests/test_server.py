@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from stream_highlight import cache
 from stream_highlight.jobs import manager
+from stream_highlight import server
 from stream_highlight.server import app
 from stream_highlight.tests.test_analyze import DURATION, SPIKES, build_chat
 
@@ -112,6 +113,13 @@ class TestServer(unittest.TestCase):
     def test_capabilities(self):
         body = self.client.get("/api/capabilities").json()
         self.assertTrue(body["version"])
+        # 「動いている版」と「ディスク上の版」を別々に答えること。
+        # version はプロセス起動時に確定させた値なので、起動後に
+        # git pull しても変わらない。
+        self.assertEqual(body["version"], server.RUNNING_VERSION)
+        self.assertIn("on_disk", body)
+        self.assertEqual(body["restart_needed"],
+                         body["on_disk"] != body["version"])
 
 
 
@@ -153,6 +161,50 @@ class TestServer(unittest.TestCase):
 
     def test_missing_job(self):
         self.assertEqual(self.client.get("/api/job/deadbeef").status_code, 404)
+
+
+class TestStaleServerHandover(unittest.TestCase):
+    """古い版が動いたままのとき、起動側がどう振る舞うか。
+
+    「更新したのに新しい機能が出ない」の原因がこれだったので、
+    判定そのものを固定しておく。
+    """
+
+    def test_version_claim_without_on_disk_is_untrustworthy(self):
+        """on_disk を返さない相手は、版を答えられない古い版。
+
+        古い /api/capabilities はその場でディスクを読むため、
+        git pull 後は「動いている版」ではなく新しい版を名乗ってしまう。
+        見分けられなければ、同じ版だと誤認して古い画面を開き続ける。
+        """
+        self.assertNotIn("on_disk", {"version": "abc1234"})
+        self.assertIn("on_disk", server.capabilities())
+
+    def test_not_running_returns_none(self):
+        """誰も居ないポートは None（＝そのまま起動していい）。"""
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            free_port = probe.getsockname()[1]
+        self.assertIsNone(server._already_running("127.0.0.1", free_port))
+
+    def test_stop_running_gives_up_when_nobody_answers(self):
+        """終了を頼めない相手でも、待ち続けずに戻ること。"""
+        import socket
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        try:
+            started = time.time()
+            # HTTPを話さない相手なので「空いた」とは判定できない
+            self.assertFalse(
+                server._stop_running("127.0.0.1", port, wait_sec=1.0))
+            self.assertLess(time.time() - started, 15.0)
+        finally:
+            listener.close()
 
 
 if __name__ == "__main__":
