@@ -21,10 +21,13 @@ YouTube と Twitch のアーカイブに対応。
 最新になるので、更新のたびに作り直す必要がない。
 デスクトップにショートカットを作っておくとよい。
 
-`start_highlight_silent.vbs` は同じことを VBScript でやる古い形。
+`start_hidden.cmd` の中身は `pythonw.exe run_app.py --update` の一行。
+pythonw はコンソールを持たない Python なので、黒い画面が一瞬も出ない。
+更新・ライブラリの導入・起動は全て `run_app.py` の中で行う。
+
+`start_highlight_silent.vbs` は同じことを VBScript でやっていた古い形。
 **Windows 11 では VBScript が段階的に無効化されており、ダブルクリックしても
-何も起きないことがある。** そうなったら `start_hidden.cmd` を使う
-（中身は PowerShell なので影響を受けない）。
+何も起きないことがある。** 残してはあるが、使うのは `start_hidden.cmd`。
 
 exe は「Pythonの無いPCでも動く」「フォルダごと持ち運べる」ための形。
 作った時点のコードで固まるので、更新するには `build_exe.bat` で作り直す。

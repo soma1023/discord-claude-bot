@@ -103,10 +103,13 @@ python -m stream_highlight.diagnose <VODのURL>
 - 起動バッチが、原因を問わず「Pythonが入っているか確認してください」と誤案内
 - Twitchのnull応答で `AttributeError` → 解析全体が失敗
 - チャットログの入れ子nullで落ちる箇所を全面的に防御（1行の崩れで全体を落とさない）
-- **非表示起動が無言で失敗する**
-  - VBScript が無効化されると `.vbs` は何も起こさずに終わる → `start_hidden.cmd` を追加
-  - `git` が認証を聞くと、非表示のまま永久に待つ → `GIT_TERMINAL_PROMPT=0` で即失敗させる
-  - 失敗しても画面に何も出ない → `--silent` のときはログをメモ帳で開く
+- **非表示起動が無言で失敗する**（起動の層を減らして解決）
+  - VBScript が無効化されると `.vbs` は何も起こさずに終わる
+  - bat → vbs / PowerShell → cmd と重ねるほど、引用符や無効化で黙って死ぬ
+  - → `pythonw.exe run_app.py --update` の一本道にした。pythonw は
+    コンソールを持たないため、黒い画面を隠す仕掛け自体が不要になる
+  - `git` が認証を聞くと、非表示のまま永久に待つ → `GIT_TERMINAL_PROMPT=0`
+  - 失敗しても画面に何も出ない → 例外を必ずログに書き、メモ帳で開く
 - **版表示が嘘をついて、更新したのに古い画面を見続ける**（二度やった）
   1. `_build_id.txt`（exeビルドの置き土産）を `.git` より優先していた
   2. `/api/capabilities` がその場で `.git` を読んでいた → 起動後に `git pull` すると
@@ -143,9 +146,9 @@ yt-dlpの自己呼び出し・終了ボタン・二重起動の回避）。
 
 ## 手元での動かし方
 
-`start_hidden.cmd` をダブルクリック。起動のたびに `git pull` で最新になり、
-黒い画面も出ない。うまく動かないときは `stream_highlight\app.log`
-（`--silent` で動かすと bat が自分でここに書き出す）。
+`start_hidden.cmd` をダブルクリック。中身は `pythonw.exe run_app.py --update`
+の一行で、更新・ライブラリ導入・起動を `run_app.py` が受け持つ。
+記録は `stream_highlight\app.log`。失敗したらメモ帳で勝手に開く。
 
 原因が分からないときは `start_highlight.bat` を直接ダブルクリックする。
 黒い画面は出るが、どこで失敗したかがそのまま読める。

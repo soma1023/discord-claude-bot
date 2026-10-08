@@ -1,21 +1,29 @@
 @echo off
-REM 黒い画面を出さずに起動する（VBScript を使わない版）。
+REM 黒い画面を出さずに起動する。
 REM
-REM Windows 11 では VBScript が段階的に無効化されており、
-REM start_highlight_silent.vbs をダブルクリックしても何も起きなくなる。
-REM こちらは PowerShell 経由で隠して起動するので、その影響を受けない。
+REM pythonw.exe はコンソールを持たない Python なので、黒い画面が一瞬も出ない。
+REM VBScript も PowerShell も経由しないため、それらが無効化されても影響が無い。
 REM
-REM 出力は stream_highlight\app.log に残る（bat 側が自分で書き出す）。
-REM 終了するときは、画面右上の「終了」ボタンを押す。
+REM 更新・ライブラリの導入・起動は run_app.py が全部やる。
+REM 記録は stream_highlight\app.log。失敗したらメモ帳で勝手に開く。
 
 cd /d "%~dp0"
 
-REM -WindowStyle Hidden が「ウィンドウを出さない」指定。
-REM 引数は --silent だけ。リダイレクトを渡さないので、入れ子の引用符が無く壊れにくい。
-powershell -NoProfile -Command "Start-Process -FilePath 'start_highlight.bat' -ArgumentList '--silent' -WindowStyle Hidden -WorkingDirectory '%~dp0'"
-if errorlevel 1 (
-    echo.
-    echo PowerShell で起動できませんでした。
-    echo start_highlight.bat を直接ダブルクリックしてください（黒い画面は出ます）。
-    pause
-)
+where pythonw >nul 2>&1 && goto PYTHONW
+where pyw >nul 2>&1 && goto PYW
+
+echo ============================================================
+echo  pythonw が見つかりませんでした。
+echo  黒い画面が出る形で起動します（これはそのまま使えます）。
+echo ============================================================
+echo.
+call "%~dp0start_highlight.bat"
+exit /b
+
+:PYTHONW
+start "" pythonw.exe "%~dp0run_app.py" --update
+exit /b
+
+:PYW
+start "" pyw.exe "%~dp0run_app.py" --update
+exit /b
