@@ -20,6 +20,18 @@ STATIC_DIR = paths.static_dir()
 app = FastAPI(title="配信ハイライト抽出", docs_url=None, redoc_url=None)
 
 
+@app.middleware("http")
+async def no_cache(request, call_next):
+    """ブラウザに古い画面を使わせない。
+
+    更新したのに画面が変わらない、という取り違えが何度も起きたため、
+    常に取り直させる。手元のサーバなので速度への影響はない。
+    """
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 class AnalyzeRequest(BaseModel):
     url: str
     refresh: bool = False
