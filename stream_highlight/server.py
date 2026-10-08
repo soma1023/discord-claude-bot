@@ -165,6 +165,18 @@ def _already_running(host, port):
         return None
 
 
+def _port_is_free(host, port):
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
 def main():
     import argparse
     import uvicorn
@@ -178,21 +190,33 @@ def main():
     shown_host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
     url = "http://%s:%d/" % (shown_host, args.port)
 
+    mine = code_version()
     running = _already_running(shown_host, args.port)
-    if running:
-        mine = code_version()
+
+    if running == mine:
+        # 同じ版が動いているなら、二重に立ち上げずそれを開く
         print("すでに起動しています: %s" % url, flush=True)
-        print("  動いている版: %s / これから起動しようとした版: %s" % (running, mine),
-              flush=True)
-        if running != mine:
-            print("  !! 古い版が動いたままです。更新を反映するには、そちらを終了して"
-                  "から起動し直してください。", flush=True)
-            print("  !! 画面右上の「終了」ボタン、または起動元のウィンドウを閉じます。"
-                  "それも無い古い版なら、タスクマネージャーで終了してください。",
-                  flush=True)
         if not args.no_browser:
             webbrowser.open(url)
         return
+
+    if running:
+        # 古い版が動いたままでも、更新した版を使えるようにする。
+        # ここで起動をやめると、更新したのに古い画面を見続けることになる。
+        print("別の版が動いています（%s）。更新した版（%s）を別のポートで起動します。"
+              % (running, mine), flush=True)
+        for candidate in range(args.port + 1, args.port + 21):
+            if _already_running(shown_host, candidate) is None and \
+                    _port_is_free(args.host, candidate):
+                args.port = candidate
+                url = "http://%s:%d/" % (shown_host, args.port)
+                break
+        else:
+            print("空いているポートが見つかりませんでした。"
+                  "動いている方を終了してから起動し直してください。", flush=True)
+            return
+        print("古い方は不要なら終了してください"
+              "（画面右上の「終了」ボタン、またはタスクマネージャー）。", flush=True)
 
     print("配信ハイライト抽出ツール: %s" % url, flush=True)
     print("動作中のコード: %s" % code_version(), flush=True)
