@@ -26,9 +26,28 @@ def _path(platform, video_id):
     return os.path.join(CACHE_DIR, "%s_%s.json.gz" % (_safe(platform), _safe(video_id)))
 
 
-def _audio_path(platform, video_id):
-    """音声解析をやめる前に作られた音量ファイル。削除のためだけに残している。"""
-    return os.path.join(CACHE_DIR, "%s_%s.audio.json.gz" % (_safe(platform), _safe(video_id)))
+def cleanup_obsolete():
+    """使わなくなったファイルを片付ける。
+
+    音声解析をやめた時点で、保存済みの音量ファイル(*.audio.json.gz)は
+    読まれなくなった。置いたままでは場所を取るだけなので、起動時に消す。
+    戻り値は (消した数, 空いた容量)。
+    """
+    if not os.path.isdir(CACHE_DIR):
+        return 0, 0
+    removed = freed = 0
+    for name in os.listdir(CACHE_DIR):
+        if not name.endswith(".audio.json.gz"):
+            continue
+        path = os.path.join(CACHE_DIR, name)
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+        except OSError:
+            continue
+        removed += 1
+        freed += size
+    return removed, freed
 
 
 def _write_gz(path, payload):
@@ -105,9 +124,8 @@ def entries():
 
 
 def remove(platform, video_id):
-    removed = False
-    for path in (_path(platform, video_id), _audio_path(platform, video_id)):
-        if os.path.exists(path):
-            os.remove(path)
-            removed = True
-    return removed
+    path = _path(platform, video_id)
+    if os.path.exists(path):
+        os.remove(path)
+        return True
+    return False

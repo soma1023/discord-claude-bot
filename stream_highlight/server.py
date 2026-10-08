@@ -182,6 +182,12 @@ def main():
     print("配信ハイライト抽出ツール: %s" % url, flush=True)
     print("動作中のコード: %s" % code_version(), flush=True)
     print("保存先: %s" % paths.data_dir(), flush=True)
+
+    # 音声解析をやめた時に読まれなくなったファイルを片付ける
+    removed, freed = cache.cleanup_obsolete()
+    if removed:
+        print("使わなくなったファイル %d件（%.1f MB）を削除しました。"
+              % (removed, freed / 1024 / 1024), flush=True)
     if not args.no_browser:
         import threading
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
