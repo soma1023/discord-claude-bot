@@ -64,6 +64,9 @@ class StreamInfo:
     fps: float = 0.0
     width: int = 0
     height: int = 0
+    # チャンネルごとの設定（profiles.py）の鍵。表示名は変わることがあるので、変わらない ID を使う。
+    # 古いキャッシュには無いので、そのときは表示名で探す。
+    channel_id: str = ""
 
     def as_dict(self):
         return asdict(self)
@@ -191,6 +194,8 @@ def fetch_info(url):
         fps=float(payload.get("fps") or 0),
         width=int(payload.get("width") or 0),
         height=int(payload.get("height") or 0),
+        # YouTube は UC... の ID、Twitch はアカウント名（uploader_id）
+        channel_id=str(payload.get("channel_id") or payload.get("uploader_id") or ""),
     )
 
 

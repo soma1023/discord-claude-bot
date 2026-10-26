@@ -28,14 +28,16 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from stream_highlight import (autoedit, cache, editexport, notify, paths, subtitles,  # noqa: E402
-                              transcribe)
+from stream_highlight import (autoedit, cache, editexport, notify, paths, profiles,  # noqa: E402
+                              subtitles, transcribe)
 from stream_highlight import autocut as cutter                                         # noqa: E402
 from stream_highlight.analyze import analyze                                            # noqa: E402
 from stream_highlight.sources import (FetchError, _run_ytdlp, _ytdlp_error, fetch_chat,  # noqa: E402
                                       fetch_info, parse_url)
 
 ENGINES = ["qwen", "whisper"]
+DEFAULT_TOP = 5
+DEFAULT_MARGIN_SEC = 60.0
 PROGRESS_FILE = "progress.json"      # アプリの画面が読む（server.py の /api/realtest/progress）
 # HLS（m3u8）を優先する。YouTube の DASH（https）に ffmpeg で途中から飛び込むと、
 # 先頭から順に読むことになり、配信の後半では何十分たっても始まらない（実測）。
@@ -477,7 +479,7 @@ def engine_reporter(engine, segment_count, progress):
 def export_engine(info, peaks, engine, args, media_path, segment_media, fmt_info, out_dir,
                   progress=None):
     options = autoedit.EditOptions(autocut=True, subtitles=True, engine=engine,
-                                   cut=cutter.CutSettings())
+                                   cut=args.cut, caption=args.caption)
     segments = editexport.build_segments(peaks, args.margin, info.duration)
     cached = all(transcribe.load_cached(*_cache_key(s, m, media_path), engine) is not None
                  for s, m in zip(segments, segment_media or [None] * len(segments)))
@@ -515,7 +517,7 @@ def words_and_timeline(info, peaks, engine, args, media_path, segment_media, fps
             segment["media"] = media
     words_per_segment = [autoedit._transcribe(s, media_path, engine, None).words
                          for s in segments]
-    cuts = [cutter.plan_cuts(s["start"], s["end"], w, s["peaks"])
+    cuts = [cutter.plan_cuts(s["start"], s["end"], w, s["peaks"], args.cut)
             for s, w in zip(segments, words_per_segment)]
     return segments, words_per_segment, editexport.Timeline(segments, cuts, fps)
 
@@ -707,8 +709,11 @@ def main(argv=None):
         stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="実際の配信で、自動カットとテロップを2つのエンジンで試す")
     parser.add_argument("url")
-    parser.add_argument("--top", type=int, default=5, help="書き出す見せ場の数（既定5）")
-    parser.add_argument("--margin", type=float, default=60.0, help="見せ場の前後の秒数（既定60）")
+    parser.add_argument("--top", type=int, default=None,
+                        help="書き出す見せ場の数（既定はチャンネルの設定、無ければ%d）" % DEFAULT_TOP)
+    parser.add_argument("--margin", type=float, default=None,
+                        help="見せ場の前後の秒数（既定はチャンネルの設定、無ければ%d）"
+                        % DEFAULT_MARGIN_SEC)
     parser.add_argument("--media", default="", help="手元にある配信全体の動画。あればダウンロードしない")
     parser.add_argument("--engines", default=",".join(ENGINES))
     parser.add_argument("--out", default="", help="出力先（既定はデータフォルダの realtest/動画ID）")
@@ -722,6 +727,7 @@ def main(argv=None):
     out_dir = args.out or os.path.join(paths.data_dir(), "realtest",
                                        "%s_%s" % (info.platform, info.video_id))
     os.makedirs(out_dir, exist_ok=True)
+    apply_profile(args, info)
     peaks = pick_peaks(info, messages, max(1, args.top))
     segments = editexport.build_segments(peaks, args.margin, info.duration)
     say("区間 %d 個（合計 %.1f 分）" % (len(segments),
@@ -739,6 +745,26 @@ def main(argv=None):
     except BaseException as exc:          # Ctrl+C で止めたときも、画面と Discord に残す
         progress.fail(str(exc) or exc.__class__.__name__)
         raise
+
+
+def apply_profile(args, info):
+    """チャンネルの設定（profiles.py）を args に反映する。コマンドで指定した値が優先。
+
+    args.cut / args.caption を作る（書き出しと点検の両方で同じ値を使うため）。
+    """
+    saved = profiles.settings_for(info)
+    if args.top is None:
+        args.top = saved.get("export_top") or DEFAULT_TOP
+    if args.margin is None:
+        args.margin = saved.get("margin_sec") or DEFAULT_MARGIN_SEC
+    args.cut = cutter.CutSettings.from_values(
+        saved.get("gap_sec", cutter.DEFAULT_GAP_SEC), saved.get("pad_sec", cutter.DEFAULT_PAD_SEC),
+        saved.get("protect_sec", cutter.DEFAULT_PROTECT_SEC))
+    args.caption = subtitles.CaptionStyle.from_values(
+        saved.get("line_chars"), saved.get("max_lines"),
+        saved.get("min_show_sec"), saved.get("max_show_sec"))
+    say("チャンネル「%s」の設定: %s" % (info.channel or "?", "保存済み" if saved else "既定値"))
+    return saved
 
 
 def run_all(args, info, peaks, segments, engines, out_dir, progress):

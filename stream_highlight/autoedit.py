@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 from . import editexport, retake, subtitles, transcribe
 from . import autocut as cutter
+# EditOptions の subtitles（ON/OFF）が同名のモジュールを隠すので、クラスは直接読み込む
+from .subtitles import CaptionStyle
 
 
 @dataclass
@@ -23,6 +25,7 @@ class EditOptions:
     retake: bool = False
     engine: str = transcribe.DEFAULT_ENGINE
     cut: cutter.CutSettings = None
+    caption: CaptionStyle = None
 
     @property
     def enabled(self):
@@ -131,7 +134,7 @@ def run(info, peaks, options, fmt="xml", margin_sec=editexport.DEFAULT_MARGIN_SE
               "edited_sec": round(timeline.total_frames / fps, 1)}
     if options.subtitles:
         words = [w for t in transcripts for w in t.words]
-        cues = subtitles.make_cues(words, timeline)
+        cues = subtitles.make_cues(words, timeline, options.caption)
         result["srt_filename"] = "%s.srt" % safe
         result["srt_content"] = subtitles.to_srt(cues)
         result["cues"] = len(cues)

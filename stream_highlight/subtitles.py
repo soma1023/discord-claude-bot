@@ -8,6 +8,8 @@ Premiere は FCP7 XML に埋め込んだテキストを正しく読めないこ�
 editexport.Timeline と同じフレームの丸めを使うので、映像とずれない。
 """
 
+from dataclasses import dataclass
+
 from .transcribe import join_words
 
 LINE_CHARS = 16          # 1行の最大文字数
@@ -17,6 +19,30 @@ MAX_SHOW_SEC = 5.0       # これより長く同じテロップを出さない
 PAUSE_SEC = 0.6          # これ以上の間があれば別のテロップにする
 SENTENCE_END = "。！？!?…"
 SOFT_BREAK = "、，,"
+
+
+@dataclass
+class CaptionStyle:
+    """テロップの体裁。チャンネルごとの設定（profiles.py）で変えられる。既定値は従来どおり。"""
+    line_chars: int = LINE_CHARS
+    max_lines: int = MAX_LINES
+    min_show_sec: float = MIN_SHOW_SEC
+    max_show_sec: float = MAX_SHOW_SEC
+
+    @classmethod
+    def from_values(cls, line_chars=None, max_lines=None, min_show_sec=None, max_show_sec=None):
+        """画面や設定ファイルから来た値を、使える範囲に収めて作る。"""
+        def pick(value, default, low, high, kind):
+            try:
+                return min(high, max(low, kind(value)))
+            except (TypeError, ValueError):
+                return default
+        style = cls(pick(line_chars, LINE_CHARS, 6, 40, int),
+                    pick(max_lines, MAX_LINES, 1, 4, int),
+                    pick(min_show_sec, MIN_SHOW_SEC, 0.2, 5.0, float),
+                    pick(max_show_sec, MAX_SHOW_SEC, 1.0, 15.0, float))
+        style.max_show_sec = max(style.max_show_sec, style.min_show_sec)
+        return style
 
 
 def wrap(parts, width=LINE_CHARS):
@@ -60,12 +86,13 @@ def wrap(parts, width=LINE_CHARS):
     return lines
 
 
-def make_cues(words, timeline):
+def make_cues(words, timeline, style=None):
     """[{"start", "end"（シーケンス上の秒）, "lines"}] を返す。
 
     カットされた所の語は出さない。発話がカット点をまたぐときは、
     そこでテロップを分ける（つなぎ目の前後で同じテロップが続いて見えないように）。
     """
+    style = style or CaptionStyle()
     fps = timeline.fps
     placed = []        # (クリップ番号, 開始フレーム, 終了フレーム, 語)
     for w in words:
@@ -82,10 +109,10 @@ def make_cues(words, timeline):
         if groups:
             group = groups[-1]
             last = group[-1]
-            fits = len(wrap([g[3] for g in group] + [text])) <= MAX_LINES
+            fits = len(wrap([g[3] for g in group] + [text], style.line_chars)) <= style.max_lines
             joined = (clip == last[0]
                       and (start - last[2]) / fps < PAUSE_SEC
-                      and (end - group[0][1]) / fps <= MAX_SHOW_SEC
+                      and (end - group[0][1]) / fps <= style.max_show_sec
                       and last[3][-1] not in SENTENCE_END
                       and fits)
             if joined:
@@ -98,13 +125,13 @@ def make_cues(words, timeline):
         start = group[0][1] / fps
         end = group[-1][2] / fps
         cues.append({"start": start, "end": end,
-                     "lines": wrap([g[3] for g in group])})
+                     "lines": wrap([g[3] for g in group], style.line_chars)})
 
     # 表示時間を整える。短いものは延ばすが、次のテロップには重ねない
     for index, cue in enumerate(cues):
         limit = cues[index + 1]["start"] if index + 1 < len(cues) else None
-        end = max(cue["end"], cue["start"] + MIN_SHOW_SEC)
-        end = min(end, cue["start"] + MAX_SHOW_SEC)
+        end = max(cue["end"], cue["start"] + style.min_show_sec)
+        end = min(end, cue["start"] + style.max_show_sec)
         if limit is not None:
             end = min(end, limit)
         cue["end"] = max(end, cue["start"])

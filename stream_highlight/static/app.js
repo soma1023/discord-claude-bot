@@ -184,6 +184,7 @@ function applyResult(result) {
   renderTabs();
   selectTab(state.keyword ? "keyword" : "all");
   resizeCanvas();
+  loadProfile(result.video_key);
 }
 
 function renderVideo(result) {
@@ -787,7 +788,7 @@ async function exportForEditor(fmt) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         video_key: state.videoKey,
-        peaks: state.visible.map((m) => m.peak_sec),
+        peaks: exportMoments().map((m) => m.peak_sec),
         fmt,
         margin_sec: parseFloat($("editMargin").value) * 60,
         fps: parseFloat($("editFps").value) || 0,
@@ -808,7 +809,7 @@ async function exportForEditor(fmt) {
     }
     saveTextFile(result.filename, result.content);
     $("editInfo").textContent =
-      `${result.filename} を保存しました（${state.visible.length}件 → ${result.segments}区間 / ` +
+      `${result.filename} を保存しました（${exportMoments().length}件 → ${result.segments}区間 / ` +
       `${result.width}x${result.height} / ${result.fps}fps）。`;
   } catch (err) {
     $("editInfo").textContent = "";
@@ -826,8 +827,121 @@ function autoEditParams() {
     gap_sec: parseFloat($("gapSec").value),
     pad_sec: parseFloat($("padSec").value),
     protect_sec: parseFloat($("protectSec").value),
+    line_chars: parseInt($("lineChars").value, 10),
+    max_lines: parseInt($("maxLines").value, 10),
+    min_show_sec: parseFloat($("minShowSec").value),
+    max_show_sec: parseFloat($("maxShowSec").value),
   };
 }
+
+// 書き出す候補。「書き出す見せ場の数」が 0 なら表示中の全部、それ以外はスコアの高い順に上から
+function exportMoments() {
+  const top = parseInt($("exportTop").value, 10) || 0;
+  if (top <= 0 || top >= state.visible.length) return state.visible;
+  return [...state.visible].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, top);
+}
+
+/* --- チャンネルごとの設定 --- */
+
+// 何も保存していないチャンネルで使う値（サーバ側の既定と合わせる）
+const PROFILE_DEFAULTS = {
+  margin_sec: 300, export_top: 0, autocut: false, subtitles: false,
+  gap_sec: 1.5, pad_sec: 0.15, protect_sec: 5,
+  line_chars: 16, max_lines: 2, min_show_sec: 0.7, max_show_sec: 5,
+};
+const PROFILE_INPUTS = {
+  gap_sec: "gapSec", pad_sec: "padSec", protect_sec: "protectSec",
+  line_chars: "lineChars", max_lines: "maxLines",
+  min_show_sec: "minShowSec", max_show_sec: "maxShowSec", export_top: "exportTop",
+};
+
+function currentProfileSettings() {
+  const settings = {
+    margin_sec: parseFloat($("editMargin").value) * 60,
+    autocut: $("autoCutInput").checked,
+    subtitles: $("subtitleInput").checked,
+    engine: $("engineSelect").value || undefined,
+  };
+  Object.entries(PROFILE_INPUTS).forEach(([key, id]) => {
+    settings[key] = Number($(id).value);
+  });
+  return settings;
+}
+
+function applyProfileSettings(saved) {
+  const settings = { ...PROFILE_DEFAULTS, ...(saved || {}) };
+  $("editMargin").value = settings.margin_sec / 60;
+  $("autoCutInput").checked = !!settings.autocut;
+  $("subtitleInput").checked = !!settings.subtitles;
+  Object.entries(PROFILE_INPUTS).forEach(([key, id]) => {
+    $(id).value = settings[key];
+  });
+  if (settings.engine && [...$("engineSelect").options].some((o) => o.value === settings.engine)) {
+    $("engineSelect").value = settings.engine;
+  }
+  syncOutputs();
+  updateAutoEditAvailability();
+}
+
+function renderProfile(profile) {
+  state.profile = profile;
+  $("profileBox").classList.toggle("hidden", !profile || !profile.key);
+  if (!profile) return;
+  $("profileName").textContent = profile.name || "（名前不明）";
+  $("profileState").textContent = profile.saved
+    ? "― 保存した設定を使っています" +
+      (profile.updated_at ? `（${new Date(profile.updated_at * 1000).toLocaleDateString()} 保存）` : "")
+    : "― まだ保存していません（既定値）";
+  $("profileResetBtn").disabled = !profile.saved;
+}
+
+// 配信を開いたときに、そのチャンネルの設定に切り替える。
+// 同じ配信を解析し直しただけのときは、手で変えた値を上書きしない。
+async function loadProfile(videoKey) {
+  let profile = null;
+  try {
+    profile = await api("/api/profile?video_key=" + encodeURIComponent(videoKey));
+  } catch (err) {
+    renderProfile(null);
+    return;
+  }
+  const changedChannel = !state.profile || state.profile.key !== profile.key;
+  renderProfile(profile);
+  if (changedChannel) applyProfileSettings(profile.settings);
+}
+
+async function saveProfile() {
+  if (!state.videoKey) return;
+  try {
+    const profile = await api("/api/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_key: state.videoKey, settings: currentProfileSettings() }),
+    });
+    renderProfile(profile);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+async function resetProfile() {
+  if (!state.videoKey) return;
+  if (!window.confirm("このチャンネルの保存した設定を消して、既定値に戻します。よろしいですか？")) return;
+  try {
+    const profile = await api("/api/profile/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_key: state.videoKey }),
+    });
+    renderProfile(profile);
+    applyProfileSettings(null);
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+$("profileSaveBtn").onclick = saveProfile;
+$("profileResetBtn").onclick = resetProfile;
 
 function waitForJob(jobId) {
   return new Promise((resolve, reject) => {
@@ -893,6 +1007,9 @@ async function loadAutoEditCapabilities() {
   let saved = null;
   try { saved = localStorage.getItem("engine"); } catch (e) { /* 保存できない環境もある */ }
   select.value = caps.engines.some((e) => e.id === saved) ? saved : caps.default_engine;
+  // チャンネルの設定を先に読み終えていたら、そちらのエンジンを優先する
+  const wanted = state.profile && state.profile.settings && state.profile.settings.engine;
+  if (wanted && caps.engines.some((e) => e.id === wanted)) select.value = wanted;
   state.autoEditCaps = caps;
   updateAutoEditAvailability();
 }
@@ -1016,7 +1133,9 @@ function syncOutputs() {
   const pairs = [["minZ", "minZOut"], ["mergeSec", "mergeSecOut"], ["leadSec", "leadSecOut"],
                  ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"],
                  ["skipStart", "skipStartOut"], ["gapSec", "gapSecOut"], ["padSec", "padSecOut"],
-                 ["protectSec", "protectSecOut"]];
+                 ["protectSec", "protectSecOut"], ["lineChars", "lineCharsOut"],
+                 ["maxLines", "maxLinesOut"], ["minShowSec", "minShowSecOut"],
+                 ["maxShowSec", "maxShowSecOut"]];
   pairs.forEach(([input, out]) => {
     const value = $(input).value;
     $(out).value = out === "skipStartOut"
@@ -1026,7 +1145,8 @@ function syncOutputs() {
 }
 
 ["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN",
- "skipStart", "gapSec", "padSec", "protectSec"].forEach((id) => {
+ "skipStart", "gapSec", "padSec", "protectSec", "lineChars", "maxLines",
+ "minShowSec", "maxShowSec"].forEach((id) => {
   $(id).addEventListener("input", syncOutputs);
 });
 
@@ -1074,6 +1194,11 @@ $("skipStart").value = 0;
 $("gapSec").value = 1.5;
 $("padSec").value = 0.15;
 $("protectSec").value = 5;
+// テロップの既定値（サーバ側 subtitles.py と合わせる）
+$("lineChars").value = 16;
+$("maxLines").value = 2;
+$("minShowSec").value = 0.7;
+$("maxShowSec").value = 5;
 syncOutputs();
 loadHistory();
 loadCapabilities();

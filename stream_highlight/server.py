@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import autoedit, cache, editexport, paths, retake, transcribe
+from . import autoedit, cache, editexport, paths, profiles, retake, transcribe
+from . import subtitles as captions      # EditExportRequest.subtitles（ON/OFF）と名前がぶつかるため
 from . import autocut as cutter
 from . import code_version
 from .analyze import Params, analyze, analyze_keyword
@@ -67,6 +68,11 @@ class EditExportRequest(BaseModel):
     gap_sec: float = cutter.DEFAULT_GAP_SEC
     pad_sec: float = cutter.DEFAULT_PAD_SEC
     protect_sec: float = cutter.DEFAULT_PROTECT_SEC
+    # テロップの体裁（チャンネルごとの設定で変わる。既定値は従来どおり）
+    line_chars: int = captions.LINE_CHARS
+    max_lines: int = captions.MAX_LINES
+    min_show_sec: float = captions.MIN_SHOW_SEC
+    max_show_sec: float = captions.MAX_SHOW_SEC
 
 
 class KeywordRequest(BaseModel):
@@ -178,7 +184,9 @@ def _start_auto_edit(req, info, fps, width, height):
     options = autoedit.EditOptions(
         autocut=req.autocut, subtitles=req.subtitles,
         retake=req.autocut and req.retake, engine=req.engine,
-        cut=cutter.CutSettings.from_values(req.gap_sec, req.pad_sec, req.protect_sec))
+        cut=cutter.CutSettings.from_values(req.gap_sec, req.pad_sec, req.protect_sec),
+        caption=captions.CaptionStyle.from_values(req.line_chars, req.max_lines,
+                                                  req.min_show_sec, req.max_show_sec))
     media_path = req.media_path.strip().strip('"')
     found = autoedit.problems(options, media_path)
     if found:
@@ -227,6 +235,39 @@ def latest_realtest_progress(now=None):
         return None
     data["stalled"] = data.get("state") == "running" and age > REALTEST_STALL_SEC
     return data
+
+
+class ProfileRequest(BaseModel):
+    video_key: str
+    settings: dict | None = None
+
+
+@app.get("/api/profile")
+def get_profile(video_key: str):
+    """この配信のチャンネルに保存した設定（カット・テロップ・区間）。"""
+    info, _ = _chat_or_404(video_key)
+    return profiles.describe(info)
+
+
+@app.post("/api/profile")
+def save_profile(req: ProfileRequest):
+    """今の設定を、この配信のチャンネルの既定にする。"""
+    info, _ = _chat_or_404(req.video_key)
+    try:
+        profiles.save(info, req.settings or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="設定を保存できませんでした: %s" % exc)
+    return profiles.describe(info)
+
+
+@app.post("/api/profile/reset")
+def reset_profile(req: ProfileRequest):
+    """このチャンネルの設定を消して、既定値に戻す。"""
+    info, _ = _chat_or_404(req.video_key)
+    profiles.remove(info)
+    return profiles.describe(info)
 
 
 @app.get("/api/realtest/progress")

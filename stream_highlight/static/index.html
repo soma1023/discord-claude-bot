@@ -89,6 +89,9 @@
         <label>ピークの前後（分）
           <input type="number" id="editMargin" min="0.5" max="30" step="0.5" value="5">
         </label>
+        <label>書き出す見せ場の数（0＝表示中の全部）
+          <input type="number" id="exportTop" min="0" max="100" step="1" value="0">
+        </label>
         <label>フレームレート
           <input type="number" id="editFps" min="1" max="240" step="0.01">
         </label>
@@ -188,6 +191,37 @@
           <input type="range" id="protectSec" min="0" max="30" step="1">
           <output id="protectSecOut"></output>
         </label>
+        <label>テロップ1行の文字数
+          <input type="range" id="lineChars" min="6" max="40" step="1">
+          <output id="lineCharsOut"></output>
+        </label>
+        <label>テロップの最大行数
+          <input type="range" id="maxLines" min="1" max="4" step="1">
+          <output id="maxLinesOut"></output>
+        </label>
+        <label>テロップの最短表示（秒）
+          <input type="range" id="minShowSec" min="0.2" max="5" step="0.1">
+          <output id="minShowSecOut"></output>
+        </label>
+        <label>テロップの最長表示（秒）
+          <input type="range" id="maxShowSec" min="1" max="15" step="0.5">
+          <output id="maxShowSecOut"></output>
+        </label>
+      </div>
+      <div id="profileBox" class="profile-box hidden">
+        <div>
+          このチャンネル: <b id="profileName"></b>
+          <span id="profileState" class="muted small"></span>
+        </div>
+        <p class="muted small">
+          カット・テロップ・書き出しの設定（ピークの前後・見せ場の数・自動カットとテロップのON/OFF・
+          エンジン）をチャンネルごとに保存し、そのチャンネルの配信を開くと自動で切り替えます。
+          感度などの解析の設定は保存しません。
+        </p>
+        <div class="profile-actions">
+          <button id="profileSaveBtn" type="button">今の設定をこのチャンネルの既定にする</button>
+          <button id="profileResetBtn" class="ghost" type="button">既定値に戻す</button>
+        </div>
       </div>
       <p class="muted small">
         チャットは保存済みなので、設定を変えても再ダウンロードは発生しません。
