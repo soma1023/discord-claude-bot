@@ -191,6 +191,7 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
             clips.append({"id": str(index), "position": position, "length": length,
                           "src_in": _frames(segment["start"], fps),
                           "label": "%02d %s" % (index, timecode(segment["start"], fps)),
+                          "media": segment.get("media"),
                           # 区間のどこが候補の時刻なのかを、マーカーで残す
                           "markers": [(peak, position + _frames(peak - segment["start"], fps))
                                       for peak in segment["peaks"]]})
@@ -206,6 +207,7 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
                       "length": clip["src_out"] - clip["src_in"], "src_in": clip["src_in"],
                       "label": "%02d-%02d %s" % (seg_index, piece,
                                                  timecode(clip["src_in"] / fps, fps)),
+                      "media": segments[clip["segment"]].get("media"),
                       "markers": []})
     # ピークはカット後の位置に付け直す。区間の最後のクリップの後ろに並べる
     for seg_index, segment in enumerate(segments):
@@ -217,13 +219,27 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
     return _xml_document(info, clips, timeline.total_frames, fps, media_path, width, height)
 
 
+def _media_frames(media, fps):
+    """区間ごとの動画ファイルの (先頭のフレーム, 長さのフレーム)。
+
+    配信全体ではなく区間付近だけをダウンロードしたときに使う。segment["media"] は
+    {"path", "offset", "duration"} で、offset はファイルの0秒が元の配信の何秒か。
+    """
+    return _frames(media["offset"], fps), _frames(media.get("duration") or 0, fps) or 1
+
+
 def _xml_document(info, clips, total_frames, fps, media_path, width, height):
-    """クリップの並び（フレーム）から xmeml を組み立てる。"""
+    """クリップの並び（フレーム）から xmeml を組み立てる。
+
+    クリップが "media"（区間ごとの動画ファイル）を持つときは、そのファイルを
+    参照し、in/out をファイル先頭からのフレームに直す。
+    """
     width = int(width or info.width or DEFAULT_WIDTH)
     height = int(height or info.height or DEFAULT_HEIGHT)
     name = (info.title or info.video_id or "highlights").strip()
     file_name = _file_name(media_path, "%s.mp4" % info.video_id)
     source_frames = _frames(info.duration or 0, fps) or 1
+    file_ids = {}
 
     root = ET.Element("xmeml", {"version": "4"})
     sequence = ET.SubElement(root, "sequence")
@@ -240,38 +256,46 @@ def _xml_document(info, clips, total_frames, fps, media_path, width, height):
     audio = ET.SubElement(media, "audio")
     audio_tracks = [ET.SubElement(audio, "track") for _ in range(2)]
 
-    first_file = True
     for clip in clips:
         position, length, src_in = clip["position"], clip["length"], clip["src_in"]
+        media = clip.get("media")
+        if media:
+            offset, frames = _media_frames(media, fps)
+            src_in = max(0, src_in - offset)
+            key, path = media["path"], media["path"]
+        else:
+            frames, key, path = source_frames, None, media_path
         for kind, track, channel in ([("video", video_track, 0)]
                                      + [("audio", audio_tracks[i], i + 1) for i in range(2)]):
             item = ET.SubElement(track, "clipitem",
                                  {"id": "%s-%s" % (kind if kind == "video" else
                                                    "audio%d" % channel, clip["id"])})
             ET.SubElement(item, "name").text = clip["label"]
-            ET.SubElement(item, "duration").text = str(source_frames)
+            ET.SubElement(item, "duration").text = str(frames)
             _rate(item, fps)
             ET.SubElement(item, "start").text = str(position)
             ET.SubElement(item, "end").text = str(position + length)
             ET.SubElement(item, "in").text = str(src_in)
             ET.SubElement(item, "out").text = str(src_in + length)
 
-            if first_file:
-                file_el = ET.SubElement(item, "file", {"id": "media-1"})
-                ET.SubElement(file_el, "name").text = file_name
-                if media_path:
-                    ET.SubElement(file_el, "pathurl").text = _path_url(media_path)
+            if key not in file_ids:
+                # ファイルの中身は最初に出てきた所で1回だけ書き、以降は id で参照する
+                file_ids[key] = "media-%d" % (len(file_ids) + 1)
+                file_el = ET.SubElement(item, "file", {"id": file_ids[key]})
+                ET.SubElement(file_el, "name").text = (
+                    _file_name(path, "") if media else file_name)
+                if path:
+                    ET.SubElement(file_el, "pathurl").text = _path_url(path)
                 _rate(file_el, fps)
-                ET.SubElement(file_el, "duration").text = str(source_frames)
+                ET.SubElement(file_el, "duration").text = str(frames)
                 file_media = ET.SubElement(file_el, "media")
                 file_video = ET.SubElement(file_media, "video")
-                ET.SubElement(file_video, "duration").text = str(source_frames)
+                ET.SubElement(file_video, "duration").text = str(frames)
                 _sample_characteristics(file_video, fps, width, height)
                 file_audio = ET.SubElement(file_media, "audio")
                 ET.SubElement(file_audio, "channelcount").text = "2"
-                first_file = False
             else:
-                ET.SubElement(item, "file", {"id": "media-1"})
+                ET.SubElement(item, "file", {"id": file_ids[key]})
 
             if kind == "audio":
                 source = ET.SubElement(item, "sourcetrack")
@@ -300,14 +324,18 @@ def to_edl(info, segments, fps=DEFAULT_FPS, media_path="", cuts=None):
         timeline = Timeline(segments, cuts, fps)
         for event, clip in enumerate(timeline.clips, 1):
             length = clip["src_out"] - clip["src_in"]
-            src_in = timecode(clip["src_in"] / fps, fps)
-            src_out = timecode(clip["src_out"] / fps, fps)
+            media = segments[clip["segment"]].get("media")
+            # 区間ごとの動画ファイルなら、ソースの時刻はそのファイルの先頭から数える
+            offset = _media_frames(media, fps)[0] if media else 0
+            src_in = timecode(max(0, clip["src_in"] - offset) / fps, fps)
+            src_out = timecode(max(0, clip["src_out"] - offset) / fps, fps)
             rec_in = timecode(clip["seq_start"] / fps, fps)
             rec_out = timecode((clip["seq_start"] + length) / fps, fps)
             for channel in ("V", "AA"):
                 lines.append("%03d  AX       %-5s C        %s %s %s %s"
                              % (event, channel, src_in, src_out, rec_in, rec_out))
-            lines.append("* FROM CLIP NAME: %s" % file_name)
+            lines.append("* FROM CLIP NAME: %s"
+                         % (_file_name(media["path"], file_name) if media else file_name))
             lines.append("* 区間 %02d-%02d" % (clip["segment"] + 1, clip["piece"] + 1))
             lines.append("")
         return "\n".join(lines)

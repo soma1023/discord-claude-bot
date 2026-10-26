@@ -526,6 +526,70 @@ class TestAutoEditRun(unittest.TestCase):
         self.assertIn("区間 2/2 を文字起こし中…", messages)
 
 
+class TestSegmentMedia(unittest.TestCase):
+    """区間付近だけをダウンロードし、区間ごとに別の動画ファイルを使うとき。"""
+
+    PEAKS = [1800.0, 5000.0]
+
+    def setUp(self):
+        self.calls = []
+        self.segments = build_segments(self.PEAKS, 120, INFO.duration)
+        # ダウンロードは区間の3秒前から始まった、という想定
+        self.media = [{"path": "C:\\dl\\part%d.mp4" % (i + 1), "offset": s["start"] - 3.0,
+                       "duration": s["end"] - s["start"] + 6.0}
+                      for i, s in enumerate(self.segments)]
+
+    def fake_transcribe(self, media_path, start, end, engine, report=None, use_cache=True):
+        self.calls.append((media_path, start, end))
+        offset = 0.0
+        for media in self.media:
+            if media_path == media["path"]:
+                offset = media["offset"]
+        # 元の配信の時刻で決まる発話を、ファイルの中の時刻で返す
+        found = TestAutoEditRun.fake_transcribe(self, media_path, start + offset, end + offset,
+                                                engine)
+        found.words = [Word(w.text, w.start - offset, w.end - offset) for w in found.words]
+        return found
+
+    def run_auto(self, segment_media):
+        options = autoedit.EditOptions(autocut=True, subtitles=True)
+        with mock.patch.object(transcribe, "transcribe_segment", side_effect=self.fake_transcribe):
+            return autoedit.run(INFO, self.PEAKS, options, margin_sec=120, fps=59.94,
+                                media_path="dummy.mp4", segment_media=segment_media)
+
+    def test_each_segment_uses_its_own_file(self):
+        result = self.run_auto(self.media)
+        # 文字起こしはファイルの中の時刻（区間は先頭から3秒の所）で頼む
+        self.assertEqual([(p, round(s, 3)) for p, s, _ in self.calls],
+                         [("C:\\dl\\part1.mp4", 3.0), ("C:\\dl\\part2.mp4", 3.0)])
+        root = parse(result["content"])
+        files = {f.get("id"): f for f in root.iter("file") if f.find("pathurl") is not None}
+        self.assertEqual(sorted(files), ["media-1", "media-2"])
+        self.assertEqual(files["media-2"].find("pathurl").text,
+                         "file://localhost/C:/dl/part2.mp4")
+        fps = 59.94
+        for item in root.findall("sequence/media/video/track/clipitem"):
+            index = int(item.get("id").split("-")[1]) - 1
+            src_in = int(item.find("in").text)
+            # in はファイル先頭から。名前は元の配信のタイムコードのまま
+            name_tc = item.find("name").text.split()[1]
+            offset = editexport._frames(self.media[index]["offset"], fps)
+            self.assertEqual(editexport.timecode((src_in + offset) / fps, fps), name_tc)
+            self.assertEqual(item.find("file").get("id"), "media-%d" % (index + 1))
+
+    def test_captions_match_single_file_export(self):
+        """ファイルが分かれても、カットとテロップは配信全体の動画のときと同じ。"""
+        split = self.run_auto(self.media)
+        self.media = []
+        whole = self.run_auto(None)
+        self.assertEqual(split["srt_content"], whole["srt_content"])
+        self.assertEqual(split["edited_sec"], whole["edited_sec"])
+
+    def test_count_mismatch_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.run_auto(self.media[:1])
+
+
 class TestServerFlow(unittest.TestCase):
     """画面から呼ぶ API。ON のときだけジョブになり、OFF ならその場で返る。"""
 

@@ -40,16 +40,40 @@ def problems(options, media_path):
     return transcribe.missing(options.engine)
 
 
+def _transcribe(segment, media_path, engine, report):
+    """区間を文字起こしする。区間ごとの動画ファイルがあればそちらを使う。"""
+    media = segment.get("media")
+    if not media:
+        return transcribe.transcribe_segment(
+            media_path, segment["start"], segment["end"], engine, report=report)
+    # ファイルの中の時刻で起こし、元の配信の時刻に戻す
+    offset = media["offset"]
+    found = transcribe.transcribe_segment(
+        media["path"], max(0.0, segment["start"] - offset), segment["end"] - offset,
+        engine, report=report)
+    found.words = [transcribe.Word(w.text, w.start + offset, w.end + offset)
+                   for w in found.words]
+    return found
+
+
 def run(info, peaks, options, fmt="xml", margin_sec=editexport.DEFAULT_MARGIN_SEC,
-        fps=editexport.DEFAULT_FPS, media_path="", width=0, height=0, report=None):
+        fps=editexport.DEFAULT_FPS, media_path="", width=0, height=0, report=None,
+        segment_media=None):
     """書き出し一式を作る。戻り値は画面にそのまま返す dict。
 
     report(message, frac) で進み具合を伝える。frac は 0〜1。
+    segment_media は区間ごとの動画ファイル {"path", "offset", "duration"} の並び
+    （build_segments の区間と同じ順）。区間付近だけをダウンロードしたときに渡す。
     """
     fps = float(fps) or editexport.DEFAULT_FPS
     segments = editexport.build_segments(peaks, margin_sec, info.duration)
     if not segments:
         raise ValueError("書き出す候補がありません。")
+    if segment_media is not None:
+        if len(segment_media) != len(segments):
+            raise ValueError("区間の数と動画ファイルの数が合いません。")
+        for segment, media in zip(segments, segment_media):
+            segment["media"] = media
     settings = options.cut or cutter.CutSettings()
 
     def say(message, frac=None):
@@ -63,8 +87,7 @@ def run(info, peaks, options, fmt="xml", margin_sec=editexport.DEFAULT_MARGIN_SE
 
         def detail(message, head=head):
             say("%s%s" % (head, message) if message.startswith("（") else message)
-        transcripts.append(transcribe.transcribe_segment(
-            media_path, segment["start"], segment["end"], options.engine, report=detail))
+        transcripts.append(_transcribe(segment, media_path, options.engine, detail))
 
     notes = []
     cuts = None
@@ -102,6 +125,8 @@ def run(info, peaks, options, fmt="xml", margin_sec=editexport.DEFAULT_MARGIN_SE
               "retakes": removed_retakes,
               "engine": options.engine,
               "device": next((t.device for t in transcripts if t.device), ""),
+              # キャッシュを使った区間は、最初に起こしたときの秒数
+              "transcribe_sec": round(sum(t.elapsed for t in transcripts), 1),
               "original_sec": round(sum(s["end"] - s["start"] for s in segments), 1),
               "edited_sec": round(timeline.total_frames / fps, 1)}
     if options.subtitles:
