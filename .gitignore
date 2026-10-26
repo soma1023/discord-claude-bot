@@ -12,6 +12,9 @@ stream_highlight/cache/
 stream_highlight/twitch_debug.json
 stream_highlight/_build_id.txt
 stream_highlight/app.log
+# サンプルの確認用動画と、それを絶対パスで指す XML/SRT（make_samples.py --video で作る）
+stream_highlight/samples/sample_source.mp4
+stream_highlight/samples/sample_linked.*
 
 # exe化の作業用（ビルド結果は配布物なのでリポジトリには入れない）
 build/

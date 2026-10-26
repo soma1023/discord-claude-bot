@@ -1,6 +1,6 @@
 # 作業状況メモ
 
-最終更新: 2026-09-18 / ブランチ `claude/stream-highlight-extractor-lzeupt`
+最終更新: 2026-10-26 / ブランチ `claude/stream-highlight-extractor-lzeupt`
 
 再開するときは、まずこのファイルを読めば続きから進められる。
 
@@ -15,8 +15,10 @@ Discordボットとは無関係で、`bot.py` は1行も変更していない。
 - 音声のラウドネス解析（任意・チャットと照合してSEの誤検知を落とす）
 - コメント密度グラフ、タイムスタンプ/チャプター/CSV書き出し
 - 取得したチャットと音量列はキャッシュし、設定変更時は再取得なし
+- **編集ソフトへの書き出しに「自動カット」「テロップ」（2026-10-26 追加・任意）**
+  文字起こしの単語の時刻から沈黙を詰め、カット後の時刻で SRT を作る。下の「自動カットとテロップ」を参照
 
-詳しい仕組みと設定は `README.md` を参照。テストは65件（`python -m unittest discover -s stream_highlight/tests -t .`）。
+詳しい仕組みと設定は `README.md` を参照。テストは171件（`python -m unittest discover -s stream_highlight/tests -t .`）。
 
 ## 検証できている範囲（重要）
 
@@ -54,6 +56,52 @@ Discordボットとは無関係で、`bot.py` は1行も変更していない。
 → 音声解析は丸ごと取り外した。ffmpeg の依存も消え、1本あたり数分の
   ダウンロードが不要になった。実装はコミット履歴に残っている
   （`be750e4` 以前）ので、必要になれば戻せる。
+
+## 自動カットとテロップ（2026-10-26）
+
+書き出す区間だけを文字起こしし、沈黙を詰めたクリップ列と SRT を作る。
+詳しくは README の「自動カットとテロップ」。
+
+| ファイル | 役割 |
+| --- | --- |
+| `transcribe.py` | エンジン（Qwen3-ASR / faster-whisper）、5分分割、ループ除去、キャッシュ、依存チェック |
+| `autocut.py` | 単語の時刻から「残す部分」を決める（余白・ピーク保護・短い断片の吸収） |
+| `retake.py` | 言い直しの判定（Claude API・任意）。`python -m stream_highlight.retake` で疎通確認 |
+| `subtitles.py` | SRT（1行16文字・2行・0.7〜5秒・カット点で分割） |
+| `editexport.py` | `Timeline`（フレームの丸めを1か所に集約）、カット版の XML / EDL |
+| `autoedit.py` | 区間ごとの 文字起こし→カット→書き出し の流れ |
+| `compare_engines.py` | 2エンジンの比較（1つずつ読み込み・解放） |
+| `samples/` | Premiere 確認用の XML / SRT と、その生成スクリプト |
+
+判断したこと:
+
+- 両方 OFF のときは、出力も処理の流れ（その場で返す同期処理）も従来のまま。
+  ON のときだけ `jobs.submit_task` でバックグラウンドにする
+- 変更前の出力を `tests/data/legacy_*` に保存し、1文字も変わらないことをテストで確かめている
+- 依存は `requirements-transcribe.txt` に分けた。本体の自動導入には入れない
+- exe 版には含めない（spec で torch などを明示的に除外）
+- ffmpeg は PATH 優先、無ければ imageio-ffmpeg
+- 言い直し削除のモデルは `.env` の `STREAM_HIGHLIGHT_RETAKE_MODEL`（既定 `claude-opus-5-5`）
+
+開発機（RTX 4060 Ti 8GB）での導入状況: qwen-asr 0.0.6 と faster-whisper 1.2.1 を導入済み。
+導入前の一覧は リポジトリ直下の `before.txt`（pip freeze）。torch は 2.5.1+cu124 のまま
+（CUDA 有効を確認）。transformers は 5.5.3 → 4.57.6、accelerate 1.13.0 → 1.12.0、
+huggingface_hub 1.10.1 → 0.36.2 に下がった。
+
+実機で確認できたこと（合成音声の検証用動画で。数値は README の「開発機での実測」）:
+
+- 両エンジンとも GPU で動き、アプリと同じ API 経路（ジョブ・進捗表示・キャッシュ）で XML と SRT が出る
+- エンジンを画面で切り替えても落ちない（whisper→Qwen、Qwen→whisper の両方）
+- 180秒を超える区間の分割と時刻のつなぎ直し（264秒で確認）
+- 発話を削るカットは無し
+
+未検証:
+
+- **Premiere での読み込み**（カット版 XML、SRT のキャプション読み込み）。`samples/` で確かめる
+- **実際の配信素材でのエンジン比較**。合成音声では whisper のほうが正確だったが、
+  ゲーム音・BGM・複数話者の入った実音声では未確認。`compare_engines` で確かめる
+- **言い直しの削除**（Claude API）は、利用者の判断で疎通確認を見送った。
+  既定モデル `claude-opus-5-5` で実際に API が通るかは未確認。キーが無いと画面で無効表示になる
 
 ## 次にやること
 

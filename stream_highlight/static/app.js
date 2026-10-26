@@ -777,6 +777,8 @@ async function exportForEditor(fmt) {
     return;
   }
   const button = fmt === "edl" ? $("editEdlBtn") : $("editXmlBtn");
+  const autoCut = $("autoCutInput").checked;
+  const subtitles = $("subtitleInput").checked;
   button.disabled = true;
   $("editInfo").textContent = "書き出し中…";
   try {
@@ -792,8 +794,18 @@ async function exportForEditor(fmt) {
         media_path: $("editPath").value,
         width: parseInt($("editWidth").value, 10) || 0,
         height: parseInt($("editHeight").value, 10) || 0,
+        // どちらも OFF なら、サーバは従来どおりその場で書き出して返す
+        autocut: autoCut,
+        subtitles,
+        retake: autoCut && $("retakeInput").checked,
+        ...autoEditParams(),
       }),
     });
+    if (result.job_id) {
+      // 文字起こしが要るので、バックグラウンドの処理を待つ
+      saveAutoEdit(await waitForJob(result.job_id), fmt);
+      return;
+    }
     saveTextFile(result.filename, result.content);
     $("editInfo").textContent =
       `${result.filename} を保存しました（${state.visible.length}件 → ${result.segments}区間 / ` +
@@ -805,6 +817,120 @@ async function exportForEditor(fmt) {
     button.disabled = false;
   }
 }
+
+/* --- 自動カット・テロップ --- */
+
+function autoEditParams() {
+  return {
+    engine: $("engineSelect").value || "qwen",
+    gap_sec: parseFloat($("gapSec").value),
+    pad_sec: parseFloat($("padSec").value),
+    protect_sec: parseFloat($("protectSec").value),
+  };
+}
+
+function waitForJob(jobId) {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(async () => {
+      let job;
+      try {
+        job = await api(`/api/job/${jobId}`);
+      } catch (err) {
+        clearInterval(timer);
+        reject(err);
+        return;
+      }
+      $("editInfo").textContent =
+        `${job.message || "処理中…"}（${Math.round((job.progress || 0) * 100)}%）`;
+      if (job.status === "done") {
+        clearInterval(timer);
+        resolve(job.result);
+      } else if (job.status === "error") {
+        clearInterval(timer);
+        reject(new Error(job.error || "書き出しに失敗しました。"));
+      }
+    }, 800);
+  });
+}
+
+function saveAutoEdit(result, fmt) {
+  saveTextFile(result.filename, result.content);
+  const saved = [result.filename];
+  if (result.srt_content != null) {
+    // ブラウザによっては、2つ目の保存で「複数のファイルのダウンロード」の許可を求められる
+    setTimeout(() => saveTextFile(result.srt_filename, result.srt_content), 400);
+    saved.push(result.srt_filename);
+  }
+  const parts = [`${saved.join(" と ")} を保存しました`];
+  parts.push(`${fmtTime(result.original_sec)} → ${fmtTime(result.edited_sec)}`);
+  if (fmt !== "edl") parts.push(`${result.clips}クリップ`);
+  if (result.cues != null) parts.push(`テロップ${result.cues}件`);
+  if (result.device) parts.push(`文字起こし: ${result.engine} / ${result.device}`);
+  let text = parts.join(" / ") + "。";
+  if (result.retakes && result.retakes.length) {
+    text += ` 言い直しを${result.retakes.length}か所削除しました。`;
+  }
+  (result.notes || []).forEach((note) => { text += " " + note; });
+  $("editInfo").textContent = text;
+}
+
+async function loadAutoEditCapabilities() {
+  let caps;
+  try {
+    caps = await api("/api/autoedit/capabilities");
+  } catch (err) {
+    return;
+  }
+  const select = $("engineSelect");
+  select.innerHTML = "";
+  caps.engines.forEach((engine) => {
+    const option = document.createElement("option");
+    option.value = engine.id;
+    option.textContent = engine.label + (engine.missing.length ? "（使えません）" : "");
+    option.title = engine.missing.join(" ");
+    select.appendChild(option);
+  });
+  let saved = null;
+  try { saved = localStorage.getItem("engine"); } catch (e) { /* 保存できない環境もある */ }
+  select.value = caps.engines.some((e) => e.id === saved) ? saved : caps.default_engine;
+  state.autoEditCaps = caps;
+  updateAutoEditAvailability();
+}
+
+function updateAutoEditAvailability() {
+  // 足りないものがあれば、そのチェックだけを使えなくして理由を出す
+  const caps = state.autoEditCaps;
+  if (!caps) return;
+  const engine = caps.engines.find((e) => e.id === $("engineSelect").value);
+  const missing = engine ? engine.missing : ["文字起こしエンジンを選んでください。"];
+  const reasons = [];
+  [["autoCutInput", missing], ["subtitleInput", missing],
+   ["retakeInput", missing.concat(caps.retake.missing ? [caps.retake.missing] : [])]]
+    .forEach(([id, problems]) => {
+      const box = $(id);
+      box.disabled = problems.length > 0;
+      if (box.disabled) box.checked = false;
+      box.parentElement.classList.toggle("disabled", box.disabled);
+      box.parentElement.title = problems.join(" ");
+    });
+  if (missing.length) reasons.push(...missing);
+  else if (caps.retake.missing) reasons.push("言い直しの削除: " + caps.retake.missing);
+  if (!$("autoCutInput").checked) $("retakeInput").checked = false;
+  $("autoEditHint").textContent = reasons.length
+    ? "使えない機能があります: " + reasons.join(" ")
+    : "動画ファイルの場所を入れたときだけ使えます。区間ごとに文字起こしするので数分かかります。" +
+      "詰める秒数や文字起こしエンジンは「解析の設定」で変えられます。";
+}
+
+$("engineSelect").addEventListener("change", () => {
+  try { localStorage.setItem("engine", $("engineSelect").value); } catch (e) { /* 無視 */ }
+  updateAutoEditAvailability();
+});
+$("autoCutInput").addEventListener("change", updateAutoEditAvailability);
+$("retakeInput").addEventListener("change", () => {
+  // 言い直しの削除はカットの一部なので、自動カットも一緒に入れる
+  if ($("retakeInput").checked) $("autoCutInput").checked = true;
+});
 
 $("editXmlBtn").onclick = () => exportForEditor("xml");
 $("editEdlBtn").onclick = () => exportForEditor("edl");
@@ -889,7 +1015,8 @@ async function loadCapabilities() {
 function syncOutputs() {
   const pairs = [["minZ", "minZOut"], ["mergeSec", "mergeSecOut"], ["leadSec", "leadSecOut"],
                  ["tailSec", "tailSecOut"], ["windowSec", "windowSecOut"], ["topN", "topNOut"],
-                 ["skipStart", "skipStartOut"]];
+                 ["skipStart", "skipStartOut"], ["gapSec", "gapSecOut"], ["padSec", "padSecOut"],
+                 ["protectSec", "protectSecOut"]];
   pairs.forEach(([input, out]) => {
     const value = $(input).value;
     $(out).value = out === "skipStartOut"
@@ -899,7 +1026,7 @@ function syncOutputs() {
 }
 
 ["minZ", "mergeSec", "leadSec", "tailSec", "windowSec", "topN",
- "skipStart"].forEach((id) => {
+ "skipStart", "gapSec", "padSec", "protectSec"].forEach((id) => {
   $(id).addEventListener("input", syncOutputs);
 });
 
@@ -943,6 +1070,11 @@ $("tailSec").value = 15;
 $("windowSec").value = 30;
 $("topN").value = 30;
 $("skipStart").value = 0;
+// 自動カットの既定値（サーバ側 autocut.py と合わせる）
+$("gapSec").value = 1.5;
+$("padSec").value = 0.15;
+$("protectSec").value = 5;
 syncOutputs();
 loadHistory();
 loadCapabilities();
+loadAutoEditCapabilities();

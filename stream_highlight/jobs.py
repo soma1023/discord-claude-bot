@@ -11,6 +11,7 @@ from collections import OrderedDict
 from . import cache
 from .analyze import analyze
 from .sources import FetchError, fetch_chat, fetch_info, parse_url
+from .transcribe import TranscribeError
 
 MAX_JOBS = 12          # 履歴として保持するジョブ数
 MAX_LOADED = 4         # メモリに載せておく配信数（1件で数万〜十数万コメント）
@@ -91,6 +92,45 @@ class JobManager:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def submit_task(self, work, message="準備中…"):
+        """解析以外の時間のかかる処理（文字起こし付きの書き出しなど）を走らせる。
+
+        work(report) を別スレッドで呼び、戻り値をそのまま結果にする。
+        report(message, frac) で進み具合を画面に伝えられる。
+        進捗は解析と同じ /api/job/{id} で問い合わせる。
+        """
+        job = Job(uuid.uuid4().hex[:12], "", None, False)
+        job.message = message
+        with self._lock:
+            self._jobs[job.id] = job
+            while len(self._jobs) > MAX_JOBS:
+                self._jobs.popitem(last=False)
+        threading.Thread(target=self._run_task, args=(job, work), daemon=True).start()
+        return job
+
+    def _run_task(self, job, work):
+        job.status = "running"
+
+        def report(message, frac=None):
+            if message:
+                job.message = message
+            if frac is not None:
+                job.progress = max(job.progress, min(1.0, float(frac)))
+        try:
+            job.result = work(report)
+            job.progress = 1.0
+            job.message = "完了"
+            job.status = "done"
+        except (ValueError, TranscribeError) as exc:
+            job.status = "error"
+            job.error = str(exc)
+            job.message = "失敗しました"
+        except Exception as exc:                      # noqa: BLE001
+            traceback.print_exc()
+            job.status = "error"
+            job.error = "書き出し中に予期しないエラーが発生しました: %s%s" % (exc, _where(exc))
+            job.message = "失敗しました"
+
     def _run(self, job):
         job.status = "running"
         try:
@@ -135,16 +175,18 @@ class JobManager:
             job.message = "失敗しました"
         except Exception as exc:                      # noqa: BLE001
             traceback.print_exc()
-            # 発生箇所が分からないと報告を受けても直せないので、画面にも出す
-            frames = traceback.extract_tb(exc.__traceback__)
-            where = ""
-            if frames:
-                last = frames[-1]
-                where = " [%s:%d %s]" % (os.path.basename(last.filename),
-                                         last.lineno, last.name)
             job.status = "error"
-            job.error = "解析中に予期しないエラーが発生しました: %s%s" % (exc, where)
+            job.error = "解析中に予期しないエラーが発生しました: %s%s" % (exc, _where(exc))
             job.message = "失敗しました"
+
+
+def _where(exc):
+    """発生箇所が分からないと報告を受けても直せないので、画面にも出す。"""
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return ""
+    last = frames[-1]
+    return " [%s:%d %s]" % (os.path.basename(last.filename), last.lineno, last.name)
 
 
 manager = JobManager()

@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import cache, editexport, paths
+from . import autoedit, cache, editexport, paths, retake, transcribe
+from . import autocut as cutter
 from . import code_version
 from .analyze import Params, analyze, analyze_keyword
 from .jobs import manager
@@ -58,6 +59,14 @@ class EditExportRequest(BaseModel):
     media_path: str = ""
     width: int = 0
     height: int = 0
+    # 以下は自動カット・テロップ。どちらも False なら従来どおりの同期的な書き出し
+    autocut: bool = False
+    subtitles: bool = False
+    retake: bool = False
+    engine: str = transcribe.DEFAULT_ENGINE
+    gap_sec: float = cutter.DEFAULT_GAP_SEC
+    pad_sec: float = cutter.DEFAULT_PAD_SEC
+    protect_sec: float = cutter.DEFAULT_PROTECT_SEC
 
 
 class KeywordRequest(BaseModel):
@@ -146,6 +155,8 @@ def export_for_editor(req: EditExportRequest):
     fps = req.fps or info.fps or editexport.DEFAULT_FPS
     width = req.width or info.width or editexport.DEFAULT_WIDTH
     height = req.height or info.height or editexport.DEFAULT_HEIGHT
+    if req.autocut or req.subtitles:
+        return _start_auto_edit(req, info, fps, width, height)
     try:
         filename, content, segments = editexport.export(
             info, req.peaks, fmt=req.fmt, margin_sec=req.margin_sec,
@@ -156,6 +167,40 @@ def export_for_editor(req: EditExportRequest):
         raise HTTPException(status_code=400, detail=str(exc))
     return {"filename": filename, "content": content, "segments": segments,
             "fps": fps, "width": width, "height": height}
+
+
+def _start_auto_edit(req, info, fps, width, height):
+    """自動カット・テロップ付きの書き出しを、バックグラウンドで始める。
+
+    文字起こしは数分かかるので、ジョブにして進捗を問い合わせてもらう。
+    画面は返ってきた job_id を /api/job/{id} で追いかける。
+    """
+    options = autoedit.EditOptions(
+        autocut=req.autocut, subtitles=req.subtitles,
+        retake=req.autocut and req.retake, engine=req.engine,
+        cut=cutter.CutSettings.from_values(req.gap_sec, req.pad_sec, req.protect_sec))
+    media_path = req.media_path.strip().strip('"')
+    found = autoedit.problems(options, media_path)
+    if found:
+        raise HTTPException(status_code=400, detail=" ".join(found))
+    if not editexport.build_segments(req.peaks, req.margin_sec, info.duration):
+        raise HTTPException(status_code=400, detail="書き出す候補がありません。")
+
+    def work(report):
+        return autoedit.run(info, req.peaks, options, fmt=req.fmt, margin_sec=req.margin_sec,
+                            fps=fps, media_path=media_path, width=width, height=height,
+                            report=report)
+
+    job = manager.submit_task(work, "文字起こしの準備中…")
+    return {"job_id": job.id}
+
+
+@app.get("/api/autoedit/capabilities")
+def autoedit_capabilities():
+    """自動カット・テロップが使えるか。足りないものは日本語で返す。"""
+    caps = transcribe.capabilities()
+    caps["retake"] = {"missing": retake.available(), "model": retake.model_name()}
+    return caps
 
 
 @app.get("/api/history")

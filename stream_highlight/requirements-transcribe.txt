@@ -1,0 +1,16 @@
+# Optional: auto-cut and subtitles (transcription). See README.md.
+# Keep this file ASCII-only: pip on Japanese Windows reads it as cp932.
+#
+# 1. Install the CUDA build of torch FIRST (https://pytorch.org/get-started/locally/).
+#    If torch is missing, the packages below pull the CPU-only build from PyPI.
+#    Example (CUDA 12.4):
+#      pip install torch --index-url https://download.pytorch.org/whl/cu124
+# 2. Check what will change before installing:
+#      pip install -r stream_highlight/requirements-transcribe.txt --dry-run
+#    qwen-asr pins transformers==4.57.6 (and downgrades accelerate/huggingface_hub).
+# 3. pip install -r stream_highlight/requirements-transcribe.txt
+
+qwen-asr==0.0.6
+faster-whisper>=1.2.1
+imageio-ffmpeg>=0.5
+anthropic>=0.40

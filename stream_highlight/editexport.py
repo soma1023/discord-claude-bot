@@ -101,15 +101,129 @@ def _sample_characteristics(parent, fps, width, height):
     return sc
 
 
+class Timeline:
+    """自動カットした後の並び。元の配信の位置とシーケンス上の位置を対応づける。
+
+    カットすると1区間が複数のクリップになる。フレームへの丸めをここ1か所で
+    行い、XML・EDL・テロップ（SRT）の全てがこの値を使う。別々に丸めると、
+    1フレームずつずれて隙間や重なりができ、テロップも映像とずれる。
+
+    clips は [{"segment", "piece", "src_in", "src_out", "seq_start"}]（フレーム）。
+    隣り合うクリップの seq は必ず隙間なく続く。
+    """
+
+    def __init__(self, segments, cuts, fps):
+        self.fps = fps
+        self.clips = []
+        position = 0
+        for seg_index, segment in enumerate(segments):
+            if not cuts or not cuts[seg_index]:
+                # カットしない区間は、従来の書き出しと同じ丸め（長さを先に丸める）にする。
+                # テロップだけを付けるときに、従来どおりの XML とずれないように。
+                src_in = _frames(segment["start"], fps)
+                length = _frames(segment["end"] - segment["start"], fps)
+                self.clips.append({"segment": seg_index, "piece": 0, "src_in": src_in,
+                                   "src_out": src_in + length, "seq_start": position})
+                position += length
+                continue
+            for piece_index, (lo, hi) in enumerate(cuts[seg_index]):
+                src_in, src_out = _frames(lo, fps), _frames(hi, fps)
+                if src_out <= src_in:
+                    continue
+                self.clips.append({"segment": seg_index, "piece": piece_index,
+                                   "src_in": src_in, "src_out": src_out,
+                                   "seq_start": position})
+                position += src_out - src_in
+        self.total_frames = position
+
+    def locate(self, seconds):
+        """元の配信の秒が、どのクリップに入るか。カットされた所なら None。"""
+        frame = _frames(seconds, self.fps)
+        for index, clip in enumerate(self.clips):
+            if clip["src_in"] <= frame < clip["src_out"]:
+                return index
+        return None
+
+    def to_sequence(self, seconds, clip_index=None):
+        """元の配信の秒を、シーケンス上のフレームにする。カットされた所なら None。
+
+        clip_index を渡すと、そのクリップの範囲に収めて返す（テロップの端が
+        カット点をまたぐときに使う）。
+        """
+        frame = _frames(seconds, self.fps)
+        if clip_index is None:
+            clip_index = self.locate(seconds)
+            if clip_index is None:
+                return None
+        clip = self.clips[clip_index]
+        frame = min(max(frame, clip["src_in"]), clip["src_out"])
+        return clip["seq_start"] + frame - clip["src_in"]
+
+    def nearest_sequence(self, seconds, segment):
+        """カットされた所でも、同じ区間の一番近いクリップに寄せて位置を返す。"""
+        found = self.to_sequence(seconds)
+        if found is not None:
+            return found
+        frame = _frames(seconds, self.fps)
+        best = None
+        for index, clip in enumerate(self.clips):
+            if clip["segment"] != segment:
+                continue
+            dist = min(abs(frame - clip["src_in"]), abs(frame - clip["src_out"]))
+            if best is None or dist < best[0]:
+                best = (dist, index)
+        if best is None:
+            return 0
+        return self.to_sequence(seconds, best[1])
+
+
 def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
-                width=0, height=0):
-    """Premiere が読み込める FCP7 XML を組み立てる。"""
+                width=0, height=0, cuts=None):
+    """Premiere が読み込める FCP7 XML を組み立てる。
+
+    cuts は区間ごとの「残す部分」[(開始秒, 終了秒)]。None なら区間を丸ごと
+    1クリップにする（自動カットを使わない、従来どおりの出力）。
+    """
+    if cuts is None:
+        clips, markers, position = [], [], 0
+        for index, segment in enumerate(segments, 1):
+            length = _frames(segment["end"] - segment["start"], fps)
+            clips.append({"id": str(index), "position": position, "length": length,
+                          "src_in": _frames(segment["start"], fps),
+                          "label": "%02d %s" % (index, timecode(segment["start"], fps)),
+                          # 区間のどこが候補の時刻なのかを、マーカーで残す
+                          "markers": [(peak, position + _frames(peak - segment["start"], fps))
+                                      for peak in segment["peaks"]]})
+            position += length
+        return _xml_document(info, clips, position, fps, media_path, width, height)
+
+    timeline = Timeline(segments, cuts, fps)
+    clips = []
+    for clip in timeline.clips:
+        seg_index, piece = clip["segment"] + 1, clip["piece"] + 1
+        # クリップ名は従来の「区間番号 元配信のタイムコード」に、区間内の連番を添える
+        clips.append({"id": "%d-%d" % (seg_index, piece), "position": clip["seq_start"],
+                      "length": clip["src_out"] - clip["src_in"], "src_in": clip["src_in"],
+                      "label": "%02d-%02d %s" % (seg_index, piece,
+                                                 timecode(clip["src_in"] / fps, fps)),
+                      "markers": []})
+    # ピークはカット後の位置に付け直す。区間の最後のクリップの後ろに並べる
+    for seg_index, segment in enumerate(segments):
+        owner = [c for c, t in zip(clips, timeline.clips) if t["segment"] == seg_index]
+        if not owner:
+            continue
+        for peak in segment["peaks"]:
+            owner[-1]["markers"].append((peak, timeline.nearest_sequence(peak, seg_index)))
+    return _xml_document(info, clips, timeline.total_frames, fps, media_path, width, height)
+
+
+def _xml_document(info, clips, total_frames, fps, media_path, width, height):
+    """クリップの並び（フレーム）から xmeml を組み立てる。"""
     width = int(width or info.width or DEFAULT_WIDTH)
     height = int(height or info.height or DEFAULT_HEIGHT)
     name = (info.title or info.video_id or "highlights").strip()
     file_name = _file_name(media_path, "%s.mp4" % info.video_id)
     source_frames = _frames(info.duration or 0, fps) or 1
-    total_frames = sum(_frames(s["end"] - s["start"], fps) for s in segments)
 
     root = ET.Element("xmeml", {"version": "4"})
     sequence = ET.SubElement(root, "sequence")
@@ -127,18 +241,14 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
     audio_tracks = [ET.SubElement(audio, "track") for _ in range(2)]
 
     first_file = True
-    position = 0
-    for index, segment in enumerate(segments, 1):
-        length = _frames(segment["end"] - segment["start"], fps)
-        src_in = _frames(segment["start"], fps)
-        label = "%02d %s" % (index, timecode(segment["start"], fps))
-
+    for clip in clips:
+        position, length, src_in = clip["position"], clip["length"], clip["src_in"]
         for kind, track, channel in ([("video", video_track, 0)]
                                      + [("audio", audio_tracks[i], i + 1) for i in range(2)]):
             item = ET.SubElement(track, "clipitem",
-                                 {"id": "%s-%d" % (kind if kind == "video" else
-                                                   "audio%d" % channel, index)})
-            ET.SubElement(item, "name").text = label
+                                 {"id": "%s-%s" % (kind if kind == "video" else
+                                                   "audio%d" % channel, clip["id"])})
+            ET.SubElement(item, "name").text = clip["label"]
             ET.SubElement(item, "duration").text = str(source_frames)
             _rate(item, fps)
             ET.SubElement(item, "start").text = str(position)
@@ -168,15 +278,11 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
                 ET.SubElement(source, "mediatype").text = "audio"
                 ET.SubElement(source, "trackindex").text = str(channel)
 
-        # 区間のどこが候補の時刻なのかを、マーカーで残す
-        for peak in segment["peaks"]:
+        for peak, frame in clip["markers"]:
             marker = ET.SubElement(sequence, "marker")
             ET.SubElement(marker, "name").text = "ピーク %s" % timecode(peak, fps)
-            ET.SubElement(marker, "in").text = str(
-                position + _frames(peak - segment["start"], fps))
+            ET.SubElement(marker, "in").text = str(frame)
             ET.SubElement(marker, "out").text = "-1"
-
-        position += length
 
     body = minidom.parseString(ET.tostring(root, encoding="utf-8")).toprettyxml(indent="  ")
     body = body.split("\n", 1)[1]        # minidom の宣言を自前のものに置き換える
@@ -184,12 +290,28 @@ def to_fcp7_xml(info, segments, fps=DEFAULT_FPS, media_path="",
             '<!DOCTYPE xmeml>\n' + body)
 
 
-def to_edl(info, segments, fps=DEFAULT_FPS, media_path=""):
+def to_edl(info, segments, fps=DEFAULT_FPS, media_path="", cuts=None):
     """どの編集ソフトでも読める EDL を組み立てる。"""
     name = (info.title or info.video_id or "highlights").strip()
     file_name = _file_name(media_path, "%s.mp4" % info.video_id)
 
     lines = ["TITLE: %s 見せ場" % name, "FCM: NON-DROP FRAME", ""]
+    if cuts is not None:
+        timeline = Timeline(segments, cuts, fps)
+        for event, clip in enumerate(timeline.clips, 1):
+            length = clip["src_out"] - clip["src_in"]
+            src_in = timecode(clip["src_in"] / fps, fps)
+            src_out = timecode(clip["src_out"] / fps, fps)
+            rec_in = timecode(clip["seq_start"] / fps, fps)
+            rec_out = timecode((clip["seq_start"] + length) / fps, fps)
+            for channel in ("V", "AA"):
+                lines.append("%03d  AX       %-5s C        %s %s %s %s"
+                             % (event, channel, src_in, src_out, rec_in, rec_out))
+            lines.append("* FROM CLIP NAME: %s" % file_name)
+            lines.append("* 区間 %02d-%02d" % (clip["segment"] + 1, clip["piece"] + 1))
+            lines.append("")
+        return "\n".join(lines)
+
     position = 0.0
     for index, segment in enumerate(segments, 1):
         length = segment["end"] - segment["start"]
@@ -207,18 +329,28 @@ def to_edl(info, segments, fps=DEFAULT_FPS, media_path=""):
     return "\n".join(lines)
 
 
+def safe_name(info):
+    """書き出すファイル名の本体（拡張子なし）。"""
+    return "".join(c for c in (info.title or info.video_id)
+                   if c not in '\\/:*?"<>|').strip()[:50] or "highlights"
+
+
 def export(info, peaks, fmt="xml", margin_sec=DEFAULT_MARGIN_SEC,
-           fps=DEFAULT_FPS, media_path="", width=0, height=0):
-    """書き出し一式。(ファイル名, 中身, 区間の数) を返す。"""
+           fps=DEFAULT_FPS, media_path="", width=0, height=0, cuts=None):
+    """書き出し一式。(ファイル名, 中身, 区間の数) を返す。
+
+    cuts は build_segments が返す区間と同じ並びの「残す部分」。
+    None なら従来どおり、区間を丸ごと1クリップにする。
+    """
     fps = float(fps) or DEFAULT_FPS
     segments = build_segments(peaks, margin_sec, info.duration)
     if not segments:
         raise ValueError("書き出す候補がありません。")
 
-    safe = "".join(c for c in (info.title or info.video_id)
-                   if c not in '\\/:*?"<>|').strip()[:50] or "highlights"
+    safe = safe_name(info)
     if fmt == "edl":
-        return "%s.edl" % safe, to_edl(info, segments, fps, media_path), len(segments)
+        return ("%s.edl" % safe, to_edl(info, segments, fps, media_path, cuts),
+                len(segments))
     return ("%s.xml" % safe,
-            to_fcp7_xml(info, segments, fps, media_path, width, height),
+            to_fcp7_xml(info, segments, fps, media_path, width, height, cuts),
             len(segments))

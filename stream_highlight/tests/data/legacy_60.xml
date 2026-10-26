@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence>
+    <name>テスト配信 見せ場</name>
+    <duration>96585</duration>
+    <rate>
+      <timebase>60</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <width>2560</width>
+            <height>1440</height>
+            <anamorphic>FALSE</anamorphic>
+            <pixelaspectratio>square</pixelaspectratio>
+            <fielddominance>none</fielddominance>
+          </samplecharacteristics>
+        </format>
+        <track>
+          <clipitem id="video-1">
+            <name>01 00:25:00:30</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>41985</end>
+            <in>90030</in>
+            <out>132015</out>
+            <file id="media-1">
+              <name>配信 本編.mp4</name>
+              <pathurl>file://localhost/C:/Users/me/Videos/%E9%85%8D%E4%BF%A1%20%E6%9C%AC%E7%B7%A8.mp4</pathurl>
+              <rate>
+                <timebase>60</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration>540000</duration>
+              <media>
+                <video>
+                  <duration>540000</duration>
+                  <samplecharacteristics>
+                    <rate>
+                      <timebase>60</timebase>
+                      <ntsc>FALSE</ntsc>
+                    </rate>
+                    <width>2560</width>
+                    <height>1440</height>
+                    <anamorphic>FALSE</anamorphic>
+                    <pixelaspectratio>square</pixelaspectratio>
+                    <fielddominance>none</fielddominance>
+                  </samplecharacteristics>
+                </video>
+                <audio>
+                  <channelcount>2</channelcount>
+                </audio>
+              </media>
+            </file>
+          </clipitem>
+          <clipitem id="video-2">
+            <name>02 01:18:20:06</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>41985</start>
+            <end>77985</end>
+            <in>282006</in>
+            <out>318006</out>
+            <file id="media-1"/>
+          </clipitem>
+          <clipitem id="video-3">
+            <name>03 02:24:50:00</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>77985</start>
+            <end>96585</end>
+            <in>521400</in>
+            <out>540000</out>
+            <file id="media-1"/>
+          </clipitem>
+        </track>
+      </video>
+      <audio>
+        <track>
+          <clipitem id="audio1-1">
+            <name>01 00:25:00:30</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>41985</end>
+            <in>90030</in>
+            <out>132015</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+          </clipitem>
+          <clipitem id="audio1-2">
+            <name>02 01:18:20:06</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>41985</start>
+            <end>77985</end>
+            <in>282006</in>
+            <out>318006</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+          </clipitem>
+          <clipitem id="audio1-3">
+            <name>03 02:24:50:00</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>77985</start>
+            <end>96585</end>
+            <in>521400</in>
+            <out>540000</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>1</trackindex>
+            </sourcetrack>
+          </clipitem>
+        </track>
+        <track>
+          <clipitem id="audio2-1">
+            <name>01 00:25:00:30</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>0</start>
+            <end>41985</end>
+            <in>90030</in>
+            <out>132015</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+            </sourcetrack>
+          </clipitem>
+          <clipitem id="audio2-2">
+            <name>02 01:18:20:06</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>41985</start>
+            <end>77985</end>
+            <in>282006</in>
+            <out>318006</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+            </sourcetrack>
+          </clipitem>
+          <clipitem id="audio2-3">
+            <name>03 02:24:50:00</name>
+            <duration>540000</duration>
+            <rate>
+              <timebase>60</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>77985</start>
+            <end>96585</end>
+            <in>521400</in>
+            <out>540000</out>
+            <file id="media-1"/>
+            <sourcetrack>
+              <mediatype>audio</mediatype>
+              <trackindex>2</trackindex>
+            </sourcetrack>
+          </clipitem>
+        </track>
+      </audio>
+    </media>
+    <marker>
+      <name>ピーク 00:30:00:30</name>
+      <in>18000</in>
+      <out>-1</out>
+    </marker>
+    <marker>
+      <name>ピーク 00:31:40:15</name>
+      <in>23985</in>
+      <out>-1</out>
+    </marker>
+    <marker>
+      <name>ピーク 01:23:20:06</name>
+      <in>59985</in>
+      <out>-1</out>
+    </marker>
+    <marker>
+      <name>ピーク 02:29:50:00</name>
+      <in>95985</in>
+      <out>-1</out>
+    </marker>
+  </sequence>
+</xmeml>

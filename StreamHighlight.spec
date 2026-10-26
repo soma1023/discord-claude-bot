@@ -27,8 +27,14 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    # 使わない重いものは入れない
-    excludes=["tkinter", "matplotlib", "numpy", "PIL", "test", "unittest"],
+    # 使わない重いものは入れない。
+    # 文字起こし（自動カット・テロップ）の依存は数GBになるので exe には含めない。
+    # 関数の中の import も PyInstaller は拾ってしまうため、明示的に外す。
+    # exe 版ではこの機能を「使えません」と表示して止める（transcribe.missing）。
+    excludes=["tkinter", "matplotlib", "numpy", "PIL", "test", "unittest",
+              "torch", "torchaudio", "torchvision", "transformers", "accelerate",
+              "qwen_asr", "faster_whisper", "ctranslate2", "imageio_ffmpeg",
+              "anthropic", "librosa", "nagisa", "gradio"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
