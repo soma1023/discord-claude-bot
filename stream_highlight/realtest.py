@@ -88,36 +88,142 @@ def probe(path):
     return seconds, float(video.group(3)), int(video.group(1)), int(video.group(2))
 
 
-def download_parts(url, segments, folder):
+REF_BEFORE_SEC = 10.0       # 照合用の音声は、区間の開始の10秒前から
+REF_LENGTH_SEC = 30.0
+CLIP_FROM_SEC, CLIP_TO_SEC = 1.0, 11.0     # 区間ファイルの冒頭のこの範囲を照らし合わせる
+MIN_MATCH_SCORE = 0.5       # これより似ていなければ、測れなかったとみなす
+
+
+def _ytdlp_section(url, fmt, start, end, out_template, exact):
+    """yt-dlp で start〜end だけを落とす。かかった秒数を返す。"""
+    args = ["-f", fmt, "--download-sections", "*%.3f-%.3f" % (start, end),
+            "--ffmpeg-location", transcribe.find_ffmpeg(), "-o", out_template, url]
+    if exact:
+        args[0:0] = ["--force-keyframes-at-cuts"]
+    if fmt == DOWNLOAD_FORMAT:
+        args[0:0] = ["--merge-output-format", "mp4"]
+    began = time.time()
+    code, lines = _run_ytdlp(args, timeout=3600)
+    if code != 0:
+        raise FetchError(_ytdlp_error(lines))
+    return time.time() - began
+
+
+def _download_time(path, elapsed=None):
+    """ダウンロードにかかった秒数を、ファイルの横に残す（2回目以降も報告できるように）。"""
+    note = path + ".json"
+    if elapsed is not None:
+        with open(note, "w", encoding="utf-8") as fh:
+            json.dump({"download_sec": round(elapsed, 1)}, fh)
+        return round(elapsed, 1)
+    try:
+        with open(note, encoding="utf-8") as fh:
+            return json.load(fh).get("download_sec")
+    except (OSError, ValueError):
+        return None
+
+
+def _downloaded(template):
+    """%(ext)s 付きの出力名から、実際にできたファイルを探す。"""
+    folder, head = os.path.split(template.replace(".%(ext)s", ""))
+    for name in sorted(os.listdir(folder)):
+        if name.startswith(head + ".") and not name.endswith((".part", ".ytdl")):
+            return os.path.join(folder, name)
+    return ""
+
+
+def find_lag(reference, clip, rate):
+    """clip が reference のどこから始まるか（秒）と、似ている度合い（0〜1）。
+
+    同じ配信の音声どうしなので、波形の相互相関（FFT）のいちばん高い所を取る。
+    """
+    import numpy as np
+
+    ref = reference.astype("float64") - reference.mean()
+    sub = clip.astype("float64") - clip.mean()
+    if len(sub) == 0 or len(ref) < len(sub):
+        return 0.0, 0.0
+    size = 1 << int(np.ceil(np.log2(len(ref) + len(sub))))
+    corr = np.fft.irfft(np.fft.rfft(ref, size) * np.conj(np.fft.rfft(sub, size)), size)
+    corr = corr[:len(ref) - len(sub) + 1]
+    # ずらした位置ごとの reference 側の大きさで割り、似ている度合いにする
+    energy = np.concatenate([[0.0], np.cumsum(ref ** 2)])
+    window = np.sqrt(np.maximum(energy[len(sub):] - energy[:-len(sub)], 1e-12))
+    score = corr / (window * np.sqrt(np.sum(sub ** 2)) + 1e-12)
+    best = int(np.argmax(score))
+    return best / float(rate), float(score[best])
+
+
+def measure_start(url, part_path, requested, folder, index):
+    """区間ファイルの0秒が、実際には元の配信の何秒か。(秒, 似ている度合い)。
+
+    区間の開始付近の音声だけを別に落とし（音声は約0.02秒単位で切れる）、
+    区間ファイルの冒頭の音声がその中のどこにあるかを探す。
+    """
+    ref_start = max(0.0, requested - REF_BEFORE_SEC)
+    template = os.path.join(folder, "ref%02d_%d.%%(ext)s" % (index, requested))
+    ref_path = _downloaded(template)
+    if not ref_path:
+        _ytdlp_section(url, "ba[ext=m4a]/ba", ref_start, ref_start + REF_LENGTH_SEC,
+                       template, exact=False)
+        ref_path = _downloaded(template)
+    reference = transcribe.extract_audio(ref_path, 0.0, REF_LENGTH_SEC)
+    clip = transcribe.extract_audio(part_path, CLIP_FROM_SEC, CLIP_TO_SEC)
+    lag, score = find_lag(reference, clip, transcribe.SAMPLE_RATE)
+    return ref_start + lag - CLIP_FROM_SEC, score
+
+
+def download_parts(url, segments, folder, check_copy=True):
     """区間ごとに、その範囲だけをダウンロードする。既にあれば使い回す。
 
-    --force-keyframes-at-cuts で切れ目を再エンコードし、ファイルの0秒が
-    指定した開始秒とぴったり一致するようにする（XML の位置がずれないように）。
+    yt-dlp の区間指定はキーフレームや HLS の区切りで切るため、そのままだと
+    ファイルの先頭が指定より数秒早くなることがある。そこで二重に対策する。
+      1. --force-keyframes-at-cuts で、切れ目を再エンコードして指定の時刻で切る
+      2. 落とした後に音声を照らし合わせて実際の先頭を測り、その値で時刻を換算する
+    check_copy なら、1つ目の区間だけ再エンコードなしでも落とし、時間とずれを比べる。
     """
     os.makedirs(folder, exist_ok=True)
     media = []
     for index, segment in enumerate(segments, 1):
         start, end = segment["start"], segment["end"]
         path = os.path.join(folder, "part%02d_%d-%d.mp4" % (index, start, end))
+        elapsed = None
         if not os.path.isfile(path):
             say("区間 %d/%d をダウンロード中（%s〜%s）…"
                 % (index, len(segments), editexport.timecode(start, 30),
                    editexport.timecode(end, 30)))
-            code, lines = _run_ytdlp([
-                "-f", DOWNLOAD_FORMAT, "--merge-output-format", "mp4",
-                "--download-sections", "*%.2f-%.2f" % (start, end),
-                "--force-keyframes-at-cuts",
-                "--ffmpeg-location", transcribe.find_ffmpeg(),
-                "-o", path, url], timeout=3600)
-            if code != 0 or not os.path.isfile(path):
-                raise FetchError(_ytdlp_error(lines))
+            elapsed = _ytdlp_section(url, DOWNLOAD_FORMAT, start, end, path, exact=True)
+            if not os.path.isfile(path):
+                raise FetchError("区間 %d のダウンロード結果が見つかりません。" % index)
         duration, fps, width, height = probe(path)
-        if abs(duration - (end - start)) > 1.0:
-            say("  注意: 区間 %d の長さが %.1f 秒（想定 %.1f 秒）。位置がずれているかもしれません。"
-                % (index, duration, end - start))
-        media.append({"path": path, "offset": start, "duration": duration,
-                      "fps": fps, "width": width, "height": height})
+        measured, score = measure_start(url, path, start, folder, index)
+        offset = measured if score >= MIN_MATCH_SCORE else start
+        say("  区間 %d: 実際の先頭は指定より %+.3f 秒（一致度 %.2f）%s"
+            % (index, measured - start, score,
+               "" if score >= MIN_MATCH_SCORE else " → 測れなかったので指定の時刻を使います"))
+        item = {"path": path, "offset": offset, "duration": duration,
+                "fps": fps, "width": width, "height": height,
+                "requested": start, "measured": measured, "score": round(score, 3),
+                "download_sec": _download_time(path, elapsed)}
+        if check_copy and index == 1:
+            item["copy_check"] = check_without_reencode(url, segment, folder)
+        media.append(item)
     return media
+
+
+def check_without_reencode(url, segment, folder):
+    """比較用: 再エンコードせずに落としたら、時間とずれがどうなるか（1区間だけ）。"""
+    start, end = segment["start"], segment["end"]
+    path = os.path.join(folder, "check_copy_%d-%d.mp4" % (start, end))
+    elapsed = None
+    if not os.path.isfile(path):
+        say("  比較のため、区間 1 を再エンコードなしでも落としています…")
+        elapsed = _ytdlp_section(url, DOWNLOAD_FORMAT, start, end, path, exact=False)
+    measured, score = measure_start(url, path, start, folder, 1)
+    say("  再エンコードなしだと、先頭は指定より %+.3f 秒（一致度 %.2f）" % (measured - start, score))
+    return {"download_sec": _download_time(path, elapsed),
+            "delta": round(measured - start, 3), "score": round(score, 3),
+            "duration": round(probe(path)[0], 2)}
 
 
 # ---------------------------------------------------------------- 3. 書き出し
@@ -184,9 +290,11 @@ def suspicious_cues(cues, timeline):
         text = cue["text"].replace("\n", "")
         plain = re.sub(r"[、。！？!?…\s]", "", text)
         reason = None
+        if re.fullmatch(r"[wWｗ草はハあアー笑]+", plain):     # 笑い声は繰り返して当然
+            continue
         if re.search(r"(.{2,}?)\1{2,}", plain):
             reason = "同じ語の繰り返し"
-        elif re.search(r"(.)\1{7,}", plain) and not re.fullmatch(r"[wWｗ草はハあアー]+", plain):
+        elif re.search(r"(.)\1{7,}", plain):
             reason = "同じ文字の連続"
         elif any(h in text.lower() for h in HALLUCINATIONS):
             reason = "定型文（音の無い所で出やすい）"
@@ -274,12 +382,47 @@ def tc(seconds):
     return "-" if seconds is None else editexport.timecode(seconds, 30)[:8]
 
 
-def write_report(path, info, peaks, results, checks, detections):
+def alignment_lines(segment_media, media_path):
+    """区間ダウンロードの位置合わせ（どう対策し、実際どれだけずれていたか）。"""
+    lines = ["## 区間ダウンロードの位置合わせ", ""]
+    if not segment_media:
+        return lines + ["手元の動画（%s）を使ったので、ダウンロードはしていない。" % media_path, ""]
+    lines += [
+        "対策: 両方を行った。",
+        "1. `--force-keyframes-at-cuts` で切れ目を再エンコードし、指定の時刻で切る",
+        "2. 落とした後、区間の開始付近の音声だけを別に落として照らし合わせ、"
+        "実際の先頭が元の配信の何秒かを測る。一致度が %.1f 以上なら、その値で時刻を換算する"
+        % MIN_MATCH_SCORE, "",
+        "| 区間 | 指定の開始 | 実際の先頭のずれ | 一致度 | 換算に使った値 | ダウンロード時間 |",
+        "| --- | --- | --- | --- | --- | --- |"]
+    for index, m in enumerate(segment_media, 1):
+        used = "実測" if m["score"] >= MIN_MATCH_SCORE else "指定（測れず）"
+        lines.append("| %d | %s（%.2f秒） | %+.3f秒 | %.2f | %s | %s |"
+                     % (index, tc(m["requested"]), m["requested"], m["measured"] - m["requested"],
+                        m["score"], used,
+                        "-" if m["download_sec"] is None else "%.1f秒" % m["download_sec"]))
+    check = segment_media[0].get("copy_check")
+    if check:
+        first = segment_media[0]
+        lines += ["", "比較（区間 1 を再エンコードなしで落とした場合）:", "",
+                  "| | 再エンコードあり（採用） | 再エンコードなし |", "| --- | --- | --- |",
+                  "| ダウンロード時間 | %s | %s |" % (
+                      "-" if first["download_sec"] is None else "%.1f秒" % first["download_sec"],
+                      "-" if check["download_sec"] is None else "%.1f秒" % check["download_sec"]),
+                  "| 実際の先頭のずれ | %+.3f秒 | %+.3f秒 |" % (
+                      first["measured"] - first["requested"], check["delta"]),
+                  "| ファイルの長さ | %.2f秒 | %.2f秒 |" % (first["duration"], check["duration"])]
+    return lines + [""]
+
+
+def write_report(path, info, peaks, results, checks, detections, alignment=()):
     lines = ["# 実配信テスト: %s" % (info.title or info.video_id), "",
              "- URL: %s" % info.url,
-             "- 見せ場: %s" % " / ".join(tc(p) for p in sorted(peaks)), "",
-             "| | " + " | ".join(results) + " |",
-             "| --- | " + " | ".join("---" for _ in results) + " |"]
+             "- 見せ場: %s" % " / ".join(tc(p) for p in sorted(peaks)), ""]
+    lines += list(alignment)
+    lines += ["## エンジンごとの結果", "",
+              "| | " + " | ".join(results) + " |",
+              "| --- | " + " | ".join("---" for _ in results) + " |"]
 
     def row(label, fn):
         lines.append("| %s | %s |" % (label, " | ".join(fn(r) for r in results.values())))
@@ -319,6 +462,8 @@ def main(argv=None):
     parser.add_argument("--media", default="", help="手元にある配信全体の動画。あればダウンロードしない")
     parser.add_argument("--engines", default=",".join(ENGINES))
     parser.add_argument("--out", default="", help="出力先（既定はデータフォルダの realtest/動画ID）")
+    parser.add_argument("--no-copy-check", action="store_true",
+                        help="区間 1 を再エンコードなしでも落として比べる、のを省く")
     args = parser.parse_args(argv)
 
     info, messages = load_stream(args.url)
@@ -342,7 +487,8 @@ def main(argv=None):
         segment_media, media_path = None, os.path.abspath(args.media)
         _, fps, width, height = probe(media_path)
     else:
-        segment_media = download_parts(args.url, segments, os.path.join(out_dir, "parts"))
+        segment_media = download_parts(args.url, segments, os.path.join(out_dir, "parts"),
+                                       check_copy=not args.no_copy_check)
         media_path = ""
         fps, width, height = (segment_media[0]["fps"], segment_media[0]["width"],
                               segment_media[0]["height"])
@@ -365,10 +511,12 @@ def main(argv=None):
     detections = false_detection_candidates(segments, words_by_engine, segment_media,
                                             media_path) if len(words_by_engine) > 1 else []
     report = write_report(os.path.join(out_dir, "report.md"), info, peaks, results, checks,
-                          detections)
+                          detections, alignment_lines(segment_media, media_path))
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as fh:
-        json.dump({e: {k: v for k, v in r.items() if k not in ("content", "srt_content")}
-                   for e, r in results.items()}, fh, ensure_ascii=False, indent=1)
+        json.dump({"engines": {e: {k: v for k, v in r.items()
+                                   if k not in ("content", "srt_content")}
+                               for e, r in results.items()},
+                   "parts": segment_media or []}, fh, ensure_ascii=False, indent=1)
     say("")
     say(report)
     say("")
