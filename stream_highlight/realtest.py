@@ -19,21 +19,31 @@ import argparse
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from stream_highlight import autoedit, cache, editexport, paths, subtitles, transcribe  # noqa: E402
+from stream_highlight import (autoedit, cache, editexport, notify, paths, subtitles,  # noqa: E402
+                              transcribe)
 from stream_highlight import autocut as cutter                                         # noqa: E402
 from stream_highlight.analyze import analyze                                            # noqa: E402
 from stream_highlight.sources import (FetchError, _run_ytdlp, _ytdlp_error, fetch_chat,  # noqa: E402
                                       fetch_info, parse_url)
 
 ENGINES = ["qwen", "whisper"]
-DOWNLOAD_FORMAT = "bv*[height<=1080]+ba/b[height<=1080]/b"
+PROGRESS_FILE = "progress.json"      # アプリの画面が読む（server.py の /api/realtest/progress）
+# HLS（m3u8）を優先する。YouTube の DASH（https）に ffmpeg で途中から飛び込むと、
+# 先頭から順に読むことになり、配信の後半では何十分たっても始まらない（実測）。
+# HLS は数秒ごとの断片なので、目的の位置から読める。映像は Premiere で扱いやすい H.264。
+DOWNLOAD_FORMAT = ("bv*[protocol^=m3u8][vcodec^=avc1][height<=1080]+ba[protocol^=m3u8]"
+                   "/b[protocol^=m3u8][height<=1080]/bv*[height<=1080]+ba/b")
+DASH_AUDIO_FORMAT = "ba[ext=m4a][protocol^=http]"
+USER_AGENT = "Mozilla/5.0"
 # 配信の締めなどで、音が無いのにエンジンが作りがちな定型文
 HALLUCINATIONS = ["ご視聴ありがとうございました", "チャンネル登録", "字幕", "おやすみなさい",
                   "thank you", "subscribe"]
@@ -41,6 +51,109 @@ HALLUCINATIONS = ["ご視聴ありがとうございました", "チャンネル
 
 def say(message):
     print(message, flush=True)
+
+
+# ---------------------------------------------------------------- 進み具合
+
+# 段階ごとの重さ（区間1つあたり）。開発機での実測（区間2分）から決めた目安:
+# ダウンロード約35秒、Qwen 約16秒、whisper 約3秒。モデルの読み込みは別に足す。
+WEIGHT_DOWNLOAD = 1.0
+WEIGHT_COPY_CHECK = 0.3
+WEIGHT_ENGINE = {"qwen": 0.5, "whisper": 0.1}
+WEIGHT_ENGINE_LOAD = {"qwen": 0.7, "whisper": 0.15}
+WEIGHT_REPORT = 0.1
+
+
+class Progress:
+    """全体の何%か・今の作業・残り時間の目安を progress.json に書き、区切りで Discord に知らせる。
+
+    アプリの画面は progress.json を読んで進捗バーを出す（server.py）。
+    """
+
+    def __init__(self, path, title, url, stages, notifier=None, clock=time.time):
+        self.path, self.title, self.url = path, title, url
+        self.stages = list(stages)                 # [(名前, 重さ)]
+        self.total = sum(w for _, w in self.stages) or 1.0
+        self.notifier = notifier
+        self.clock = clock
+        self.started = clock()
+        self.percent = 0.0
+        self.message = "準備中…"
+        self.state = "running"
+
+    def _base(self, stage):
+        base = 0.0
+        for name, weight in self.stages:
+            if name == stage:
+                return base, weight
+            base += weight
+        raise KeyError(stage)
+
+    def update(self, stage, frac, message, notify=False):
+        """stage の中で frac（0〜1）まで進んだ。"""
+        base, weight = self._base(stage)
+        # 戻ることはない（文字起こしの分割表示などで細かく上下しないように）
+        self.percent = max(self.percent,
+                           min(100.0, 100.0 * (base + weight * max(0.0, min(1.0, frac))) / self.total))
+        self.message = message
+        self._write()
+        if notify:
+            self.notify("%s（全体 %d%%%s）" % (message, self.percent, self._eta_text()))
+
+    def eta_sec(self):
+        """残り時間の目安。ここまでの速さが続くとして計算する。始めのうちは出さない。"""
+        if self.percent < 5 or self.percent >= 100:
+            return None
+        elapsed = self.clock() - self.started
+        return elapsed * (100.0 - self.percent) / self.percent
+
+    def _eta_text(self):
+        eta = self.eta_sec()
+        return "" if eta is None else "、残り約%d分" % max(1, round(eta / 60.0))
+
+    def finish(self, message, summary=""):
+        self.state, self.percent, self.message = "done", 100.0, message
+        self._write()
+        self.notify("%s\n%s" % (message, summary) if summary else message)
+
+    def fail(self, message):
+        self.state, self.message = "error", message
+        self._write()
+        self.notify("失敗しました: %s" % message)
+
+    def notify(self, text):
+        if self.notifier and self.notifier("【実配信テスト】%s\n%s" % (self.title, text)) is False:
+            if not getattr(self, "_warned", False):
+                say("  注意: Discord に送れませんでした（Webhook の URL か回線を確かめてください）")
+                self._warned = True
+
+    def as_dict(self):
+        return {"title": self.title, "url": self.url, "state": self.state,
+                "percent": round(self.percent, 1), "message": self.message,
+                "started_at": self.started, "updated_at": self.clock(),
+                "eta_sec": None if self.eta_sec() is None else round(self.eta_sec()),
+                "out_dir": os.path.dirname(self.path)}
+
+    def _write(self):
+        temp = self.path + ".tmp"
+        try:
+            with open(temp, "w", encoding="utf-8") as fh:
+                json.dump(self.as_dict(), fh, ensure_ascii=False)
+            os.replace(temp, self.path)    # 画面が書きかけを読まないよう、まとめて置き換える
+        except OSError:
+            pass
+
+
+def plan_stages(segment_count, engines, download, copy_check):
+    stages = []
+    if download:
+        stages.append(("download", segment_count * WEIGHT_DOWNLOAD
+                       + (WEIGHT_COPY_CHECK if copy_check else 0.0)))
+    for engine in engines:
+        stages.append((engine, WEIGHT_ENGINE_LOAD.get(engine, 0.3)
+                       + segment_count * WEIGHT_ENGINE.get(engine, 0.3)))
+    stages.append(("report", WEIGHT_REPORT))
+    return stages
 
 
 # ---------------------------------------------------------------- 1. 解析
@@ -154,26 +267,122 @@ def find_lag(reference, clip, rate):
     return best / float(rate), float(score[best])
 
 
-def measure_start(url, part_path, requested, folder, index):
-    """区間ファイルの0秒が、実際には元の配信の何秒か。(秒, 似ている度合い)。
+_dash_urls = {}
 
-    区間の開始付近の音声だけを別に落とし（音声は約0.02秒単位で切れる）、
-    区間ファイルの冒頭の音声がその中のどこにあるかを探す。
+
+def _http_range(media_url, first, last):
+    request = urllib.request.Request(media_url, headers={
+        "User-Agent": USER_AGENT, "Range": "bytes=%d-%d" % (first, last)})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read()
+
+
+def parse_sidx(data, base):
+    """mp4 の sidx（目次）から、断片ごとの (開始秒, バイト位置, バイト数) を作る。
+
+    data は sidx の箱の中身（大きさと種類の8バイトを除く）、base は箱の直後のバイト位置。
+    """
+    version = data[0]
+    timescale = struct.unpack(">I", data[8:12])[0]
+    if version == 0:
+        earliest, first_offset = struct.unpack(">II", data[12:20])
+        pos = 20
+    else:
+        earliest, first_offset = struct.unpack(">QQ", data[12:28])
+        pos = 28
+    count = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+    pos += 4
+    fragments, seconds, offset = [], earliest / float(timescale), base + first_offset
+    for i in range(count):
+        size, duration, _ = struct.unpack(">III", data[pos + 12 * i:pos + 12 * i + 12])
+        size &= 0x7fffffff
+        fragments.append((seconds, offset, size))
+        seconds += duration / float(timescale)
+        offset += size
+    return fragments
+
+
+def dash_reference(url, start, length, path):
+    """YouTube の DASH 音声から start〜start+length を含む部分だけを取る。(実際の開始秒)。
+
+    DASH の音声ファイルには「何秒目が何バイト目か」の目次（sidx）があり、
+    プレーヤーと同じ時刻を持つ。そこで必要な断片だけを範囲指定で取り、先頭の
+    初期化部分（ftyp と moov）とつなげて再生できるファイルにする。
+    ffmpeg で途中から飛び込むのと違い、すぐ終わる。
+    """
+    if url not in _dash_urls:
+        code, lines = _run_ytdlp(["-g", "-f", DASH_AUDIO_FORMAT, url], timeout=300)
+        found = [l for l in lines if l.startswith("http")]
+        if code != 0 or not found:
+            raise FetchError(_ytdlp_error(lines))
+        _dash_urls[url] = found[-1]
+    media_url = _dash_urls[url]
+    head = _http_range(media_url, 0, 65535)
+    pos, init_end, fragments = 0, 0, None
+    while pos + 8 <= len(head):
+        size, kind = struct.unpack(">I4s", head[pos:pos + 8])
+        if kind == b"sidx":
+            if pos + size > len(head):          # 長い配信で目次が大きいとき
+                head += _http_range(media_url, len(head), pos + size - 1)
+            fragments = parse_sidx(head[pos + 8:pos + size], pos + size)
+            break
+        if kind == b"moov":
+            init_end = pos + size
+        pos += size
+    if not fragments or not init_end:
+        raise FetchError("DASH の音声に目次（sidx）がありません。")
+    first = max(i for i, f in enumerate(fragments) if f[0] <= start or i == 0)
+    last = next((i for i, f in enumerate(fragments) if f[0] >= start + length),
+                len(fragments) - 1)
+    body = _http_range(media_url, fragments[first][1],
+                       fragments[last][1] + fragments[last][2] - 1)
+    with open(path, "wb") as fh:
+        fh.write(head[:init_end] + body)
+    return fragments[first][0]
+
+
+def reference_audio(url, requested, folder, index):
+    """照合の基準にする音声。(ファイル, その0秒が元の配信の何秒か, 基準の種類)。
+
+    YouTube なら DASH の目次から取る（プレーヤーと同じ時刻で、区間ファイルとは別の経路）。
+    取れないとき（Twitch など）は、HLS の音声を yt-dlp で落とす。
     """
     ref_start = max(0.0, requested - REF_BEFORE_SEC)
+    path = os.path.join(folder, "ref%02d_%d_dash.m4a" % (index, requested))
+    note = path + ".json"
+    if os.path.isfile(path) and os.path.isfile(note):
+        with open(note, encoding="utf-8") as fh:
+            return path, json.load(fh)["start"], "DASH"
+    try:
+        actual = dash_reference(url, ref_start, REF_LENGTH_SEC, path)
+        with open(note, "w", encoding="utf-8") as fh:
+            json.dump({"start": actual}, fh)
+        return path, actual, "DASH"
+    except (FetchError, OSError, ValueError, struct.error) as exc:
+        say("  DASH の音声を取れなかったので、HLS の音声で照らし合わせます（%s）" % exc)
     template = os.path.join(folder, "ref%02d_%d.%%(ext)s" % (index, requested))
     ref_path = _downloaded(template)
     if not ref_path:
-        _ytdlp_section(url, "ba[ext=m4a]/ba", ref_start, ref_start + REF_LENGTH_SEC,
+        _ytdlp_section(url, "ba[protocol^=m3u8]/ba", ref_start, ref_start + REF_LENGTH_SEC,
                        template, exact=False)
         ref_path = _downloaded(template)
-    reference = transcribe.extract_audio(ref_path, 0.0, REF_LENGTH_SEC)
+    return ref_path, ref_start, "HLS"
+
+
+def measure_start(url, part_path, requested, folder, index):
+    """区間ファイルの0秒が、実際には元の配信の何秒か。(秒, 似ている度合い, 基準の種類)。
+
+    区間の開始付近の音声を別の経路で取り、区間ファイルの冒頭の音声が
+    その中のどこにあるかを探す。
+    """
+    ref_path, ref_start, kind = reference_audio(url, requested, folder, index)
+    reference = transcribe.extract_audio(ref_path, 0.0, REF_LENGTH_SEC + REF_BEFORE_SEC)
     clip = transcribe.extract_audio(part_path, CLIP_FROM_SEC, CLIP_TO_SEC)
     lag, score = find_lag(reference, clip, transcribe.SAMPLE_RATE)
-    return ref_start + lag - CLIP_FROM_SEC, score
+    return ref_start + lag - CLIP_FROM_SEC, score, kind
 
 
-def download_parts(url, segments, folder, check_copy=True):
+def download_parts(url, segments, folder, check_copy=True, progress=None):
     """区間ごとに、その範囲だけをダウンロードする。既にあれば使い回す。
 
     yt-dlp の区間指定はキーフレームや HLS の区切りで切るため、そのままだと
@@ -184,10 +393,21 @@ def download_parts(url, segments, folder, check_copy=True):
     """
     os.makedirs(folder, exist_ok=True)
     media = []
+    # 1区間 + 比較用の再エンコードなし（区間1だけ）を、重さの比で進める
+    units = len(segments) * WEIGHT_DOWNLOAD + (WEIGHT_COPY_CHECK if check_copy else 0.0)
+    done = 0.0
+
+    def advance(amount, message, notify=False):
+        nonlocal done
+        done += amount
+        if progress:
+            progress.update("download", done / units, message, notify=notify)
+
     for index, segment in enumerate(segments, 1):
         start, end = segment["start"], segment["end"]
         path = os.path.join(folder, "part%02d_%d-%d.mp4" % (index, start, end))
         elapsed = None
+        advance(0.0, "区間 %d/%d をダウンロード中" % (index, len(segments)))
         if not os.path.isfile(path):
             say("区間 %d/%d をダウンロード中（%s〜%s）…"
                 % (index, len(segments), editexport.timecode(start, 30),
@@ -196,17 +416,21 @@ def download_parts(url, segments, folder, check_copy=True):
             if not os.path.isfile(path):
                 raise FetchError("区間 %d のダウンロード結果が見つかりません。" % index)
         duration, fps, width, height = probe(path)
-        measured, score = measure_start(url, path, start, folder, index)
+        measured, score, kind = measure_start(url, path, start, folder, index)
         offset = measured if score >= MIN_MATCH_SCORE else start
-        say("  区間 %d: 実際の先頭は指定より %+.3f 秒（一致度 %.2f）%s"
-            % (index, measured - start, score,
+        say("  区間 %d: 実際の先頭は指定より %+.3f 秒（一致度 %.2f、基準 %s）%s"
+            % (index, measured - start, score, kind,
                "" if score >= MIN_MATCH_SCORE else " → 測れなかったので指定の時刻を使います"))
         item = {"path": path, "offset": offset, "duration": duration,
                 "fps": fps, "width": width, "height": height,
                 "requested": start, "measured": measured, "score": round(score, 3),
+                "reference": kind,
                 "download_sec": _download_time(path, elapsed)}
+        advance(WEIGHT_DOWNLOAD, "区間 %d/%d をダウンロードしました（先頭のずれ %+.3f秒）"
+                % (index, len(segments), measured - start), notify=True)
         if check_copy and index == 1:
             item["copy_check"] = check_without_reencode(url, segment, folder)
+            advance(WEIGHT_COPY_CHECK, "比較用の区間 1（再エンコードなし）をダウンロードしました")
         media.append(item)
     return media
 
@@ -219,7 +443,7 @@ def check_without_reencode(url, segment, folder):
     if not os.path.isfile(path):
         say("  比較のため、区間 1 を再エンコードなしでも落としています…")
         elapsed = _ytdlp_section(url, DOWNLOAD_FORMAT, start, end, path, exact=False)
-    measured, score = measure_start(url, path, start, folder, 1)
+    measured, score, _ = measure_start(url, path, start, folder, 1)
     say("  再エンコードなしだと、先頭は指定より %+.3f 秒（一致度 %.2f）" % (measured - start, score))
     return {"download_sec": _download_time(path, elapsed),
             "delta": round(measured - start, 3), "score": round(score, 3),
@@ -228,7 +452,30 @@ def check_without_reencode(url, segment, folder):
 
 # ---------------------------------------------------------------- 3. 書き出し
 
-def export_engine(info, peaks, engine, args, media_path, segment_media, fmt_info, out_dir):
+def engine_reporter(engine, segment_count, progress):
+    """autoedit.run の進み具合（区間の何割まで来たか）を、全体の進捗に直す。
+
+    モデルの読み込みは最初の区間の中で起きるので、区間1つ分が終わった時点で
+    読み込みの重さもまとめて進める。
+    """
+    load = WEIGHT_ENGINE_LOAD.get(engine, 0.3)
+    per = WEIGHT_ENGINE.get(engine, 0.3)
+    total = load + segment_count * per
+
+    def report(message, frac=None):
+        say("  [%s] %s" % (engine, message))
+        if progress is None or frac is None:
+            return
+        done_segments = frac * segment_count
+        stage = (load + done_segments * per) / total if done_segments else 0.0
+        # 区間の始まりごとに Discord へ（分割の細かい表示は画面だけ）
+        progress.update(engine, stage, "[%s] %s" % (engine, message),
+                        notify=message.startswith("区間 "))
+    return report
+
+
+def export_engine(info, peaks, engine, args, media_path, segment_media, fmt_info, out_dir,
+                  progress=None):
     options = autoedit.EditOptions(autocut=True, subtitles=True, engine=engine,
                                    cut=cutter.CutSettings())
     segments = editexport.build_segments(peaks, args.margin, info.duration)
@@ -238,7 +485,7 @@ def export_engine(info, peaks, engine, args, media_path, segment_media, fmt_info
     result = autoedit.run(info, peaks, options, margin_sec=args.margin, fps=fmt_info["fps"],
                           media_path=media_path, width=fmt_info["width"],
                           height=fmt_info["height"], segment_media=segment_media,
-                          report=lambda m, f=None: say("  [%s] %s" % (engine, m)))
+                          report=engine_reporter(engine, len(segments), progress))
     total = time.time() - began
     transcribe.holder.release()          # 次のエンジンを読む前に VRAM を空ける
 
@@ -389,17 +636,20 @@ def alignment_lines(segment_media, media_path):
         return lines + ["手元の動画（%s）を使ったので、ダウンロードはしていない。" % media_path, ""]
     lines += [
         "対策: 両方を行った。",
-        "1. `--force-keyframes-at-cuts` で切れ目を再エンコードし、指定の時刻で切る",
-        "2. 落とした後、区間の開始付近の音声だけを別に落として照らし合わせ、"
+        "1. `--force-keyframes-at-cuts` で切れ目を再エンコードし、指定の時刻で切る"
+        "（区間は HLS 形式で落とす）",
+        "2. 落とした後、区間の開始付近の音声を別の経路で取って照らし合わせ、"
         "実際の先頭が元の配信の何秒かを測る。一致度が %.1f 以上なら、その値で時刻を換算する"
-        % MIN_MATCH_SCORE, "",
-        "| 区間 | 指定の開始 | 実際の先頭のずれ | 一致度 | 換算に使った値 | ダウンロード時間 |",
-        "| --- | --- | --- | --- | --- | --- |"]
+        % MIN_MATCH_SCORE,
+        "   - 基準 DASH: YouTube の DASH 音声の目次（sidx）から取った音声。プレーヤーと同じ時刻",
+        "   - 基準 HLS: DASH が無いとき（Twitch など）に使う HLS の音声", "",
+        "| 区間 | 指定の開始 | 実際の先頭のずれ | 一致度 | 基準 | 換算に使った値 | ダウンロード時間 |",
+        "| --- | --- | --- | --- | --- | --- | --- |"]
     for index, m in enumerate(segment_media, 1):
         used = "実測" if m["score"] >= MIN_MATCH_SCORE else "指定（測れず）"
-        lines.append("| %d | %s（%.2f秒） | %+.3f秒 | %.2f | %s | %s |"
+        lines.append("| %d | %s（%.2f秒） | %+.3f秒 | %.2f | %s | %s | %s |"
                      % (index, tc(m["requested"]), m["requested"], m["measured"] - m["requested"],
-                        m["score"], used,
+                        m["score"], m.get("reference", "-"), used,
                         "-" if m["download_sec"] is None else "%.1f秒" % m["download_sec"]))
     check = segment_media[0].get("copy_check")
     if check:
@@ -465,6 +715,8 @@ def main(argv=None):
     parser.add_argument("--no-copy-check", action="store_true",
                         help="区間 1 を再エンコードなしでも落として比べる、のを省く")
     args = parser.parse_args(argv)
+    if notify.enabled():
+        say("進み具合を Discord に知らせます（.env の %s）" % notify.WEBHOOK_ENV)
 
     info, messages = load_stream(args.url)
     out_dir = args.out or os.path.join(paths.data_dir(), "realtest",
@@ -476,6 +728,20 @@ def main(argv=None):
                                    sum(s["end"] - s["start"] for s in segments) / 60))
 
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
+    progress = Progress(os.path.join(out_dir, PROGRESS_FILE), info.title or info.video_id,
+                        info.url, plan_stages(len(segments), engines, not args.media,
+                                              not args.no_copy_check),
+                        notifier=notify.post)
+    progress.update(progress.stages[0][0], 0.0, "開始しました（区間 %d 個・%s）"
+                    % (len(segments), " / ".join(engines)), notify=True)
+    try:
+        run_all(args, info, peaks, segments, engines, out_dir, progress)
+    except BaseException as exc:          # Ctrl+C で止めたときも、画面と Discord に残す
+        progress.fail(str(exc) or exc.__class__.__name__)
+        raise
+
+
+def run_all(args, info, peaks, segments, engines, out_dir, progress):
     for engine in engines:
         problems = transcribe.missing(engine)
         if problems:
@@ -488,7 +754,7 @@ def main(argv=None):
         _, fps, width, height = probe(media_path)
     else:
         segment_media = download_parts(args.url, segments, os.path.join(out_dir, "parts"),
-                                       check_copy=not args.no_copy_check)
+                                       check_copy=not args.no_copy_check, progress=progress)
         media_path = ""
         fps, width, height = (segment_media[0]["fps"], segment_media[0]["width"],
                               segment_media[0]["height"])
@@ -499,8 +765,11 @@ def main(argv=None):
     for engine in engines:
         say("%s で書き出しています…" % engine)
         result = export_engine(info, peaks, engine, args, media_path, segment_media,
-                               fmt_info, out_dir)
+                               fmt_info, out_dir, progress=progress)
         results[engine] = result
+        progress.update(engine, 1.0, "%s の書き出しが終わりました（%s → %s、文字起こし %.0f秒）"
+                        % (engine, tc(result["original_sec"]), tc(result["edited_sec"]),
+                           result["transcribe_sec"]), notify=True)
         _, words, timeline = words_and_timeline(info, peaks, engine, args, media_path,
                                                 segment_media, float(fmt_info["fps"]))
         words_by_engine[engine] = words
@@ -508,6 +777,7 @@ def main(argv=None):
         say("  → %s / %s" % (result["xml_path"], result["srt_path"]))
     transcribe.holder.release()
 
+    progress.update("report", 0.0, "点検と report.md を作っています")
     detections = false_detection_candidates(segments, words_by_engine, segment_media,
                                             media_path) if len(words_by_engine) > 1 else []
     report = write_report(os.path.join(out_dir, "report.md"), info, peaks, results, checks,
@@ -521,6 +791,24 @@ def main(argv=None):
     say(report)
     say("")
     say("出力先: %s" % out_dir)
+    progress.finish("完了しました（%d分%d秒）" % divmod(int(time.time() - progress.started), 60),
+                    summary_text(results, checks, detections, segment_media, out_dir))
+
+
+def summary_text(results, checks, detections, segment_media, out_dir):
+    """Discord に送る短いまとめ（表は崩れるので、エンジンごとに1行）。"""
+    lines = []
+    for engine, r in results.items():
+        lines.append("・%s: %s → %s、カット %d、テロップ %d、文字起こし %.0f秒、"
+                     "おかしなテロップ候補 %d、誤検出候補 %d"
+                     % (engine, tc(r["original_sec"]), tc(r["edited_sec"]),
+                        r["clips"] - r["segments"], r["cues"], r["transcribe_sec"],
+                        len(checks[engine]), sum(1 for d in detections if d[0] == engine)))
+    if segment_media:
+        worst = max(abs(m["measured"] - m["requested"]) for m in segment_media)
+        lines.append("・区間の先頭のずれ: 最大 %.3f秒" % worst)
+    lines.append("・出力先: %s" % out_dir)
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

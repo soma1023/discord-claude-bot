@@ -9,6 +9,7 @@ __pycache__/
 logs/
 bot.log
 stream_highlight/cache/
+stream_highlight/realtest/
 stream_highlight/twitch_debug.json
 stream_highlight/_build_id.txt
 stream_highlight/app.log

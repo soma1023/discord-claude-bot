@@ -1078,3 +1078,39 @@ syncOutputs();
 loadHistory();
 loadCapabilities();
 loadAutoEditCapabilities();
+watchRealtest();
+
+// 実配信テスト（realtest.py）は別のプロセスで動くので、進捗ファイルを定期的に見に行く
+function watchRealtest() {
+  const refresh = async () => {
+    let data = null;
+    try {
+      const res = await fetch("/api/realtest/progress");
+      if (res.ok) data = await res.json();
+    } catch (e) { /* アプリの終了直後など。次の回に任せる */ }
+    renderRealtest(data);
+  };
+  refresh();
+  setInterval(refresh, 5000);
+}
+
+function renderRealtest(data) {
+  const panel = $("realtestPanel");
+  if (!data || !data.active) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.classList.toggle("error", data.state === "error");
+  const percent = Math.floor(data.percent || 0);
+  $("realtestTitle").textContent = data.title || "";
+  $("realtestPercent").textContent = percent + "%";
+  $("realtestBar").style.width = percent + "%";
+  let message = data.message || "";
+  if (data.state === "running" && data.eta_sec != null) {
+    message += "（残り約" + Math.max(1, Math.round(data.eta_sec / 60)) + "分）";
+  }
+  if (data.stalled) message += " ― 15分以上進んでいません。止まっているかもしれません";
+  if (data.state === "done") message += " ― 出力先: " + data.out_dir;
+  $("realtestMessage").textContent = message;
+}

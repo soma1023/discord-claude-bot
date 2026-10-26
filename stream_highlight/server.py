@@ -203,6 +203,39 @@ def autoedit_capabilities():
     return caps
 
 
+REALTEST_SHOW_DONE_SEC = 30 * 60     # 終わった実配信テストを画面に出しておく時間
+REALTEST_STALL_SEC = 15 * 60         # これだけ更新が無ければ、止まっているかもしれない
+
+
+def latest_realtest_progress(now=None):
+    """いちばん新しい実配信テスト（realtest.py）の進み具合。見せる物が無ければ None。"""
+    import glob
+    import json
+    import time
+
+    now = now or time.time()
+    found = glob.glob(os.path.join(paths.data_dir(), "realtest", "*", "progress.json"))
+    if not found:
+        return None
+    try:
+        with open(max(found, key=os.path.getmtime), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    age = now - float(data.get("updated_at") or 0)
+    if data.get("state") != "running" and age > REALTEST_SHOW_DONE_SEC:
+        return None
+    data["stalled"] = data.get("state") == "running" and age > REALTEST_STALL_SEC
+    return data
+
+
+@app.get("/api/realtest/progress")
+def realtest_progress():
+    """実配信テストの進捗（画面の進捗バー用）。動いていなければ {"active": false}。"""
+    data = latest_realtest_progress()
+    return dict(data, active=True) if data else {"active": False}
+
+
 @app.get("/api/history")
 def history():
     return {"entries": cache.entries()}
