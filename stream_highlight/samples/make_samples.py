@@ -14,6 +14,7 @@
 """
 
 import argparse
+import math
 import os
 import subprocess
 import sys
@@ -34,13 +35,18 @@ VIDEO_NAME = "sample_source.mp4"
 
 
 def synthetic_words():
-    """数秒しゃべっては黙る、を繰り返す架空の発話。語の中身は元の秒数。"""
+    """数秒しゃべっては黙る、を繰り返す架空の発話。語の中身は元の秒数。
+
+    語はちょうど整数秒から始める。「143秒です。」は 143.0〜143.9 秒に出るので、
+    表示中の画面のカウンタは必ず 143 になる。
+    """
     words = []
     t = 2.0
     pattern = [(4.0, 0.6), (3.0, 3.5), (5.0, 0.8), (2.5, 6.0), (4.0, 2.2)]
     k = 0
     while t < DURATION - 5:
         talk, pause = pattern[k % len(pattern)]
+        t = float(math.ceil(t - 1e-9))
         end = t + talk
         while t < end:
             words.append(Word("%d秒" % int(t), t, t + 0.45))
