@@ -60,6 +60,7 @@ SPLIT_SMOOTH_SEC = 0.4      # 静かさをならす幅（語の中の一瞬の�
 QWEN_ASR_MODEL = "Qwen/Qwen3-ASR-1.7B"
 QWEN_ALIGNER_MODEL = "Qwen/Qwen3-ForcedAligner-0.6B"
 WHISPER_MODEL = "large-v3-turbo"
+WHISPER_LARGE_MODEL = "large-v3"     # 手元の動画用の CLI（localedit.py）の既定。turbo より遅いが正確
 
 # 画面の選択肢。並び順がそのまま表示順になる。
 ENGINE_LABELS = {
@@ -383,6 +384,7 @@ def _has(module):
 ENGINE_MODULES = {
     "qwen": ["numpy", "torch", "qwen_asr"],
     "whisper": ["numpy", "faster_whisper"],
+    "whisper-large-v3": ["numpy", "faster_whisper"],
 }
 
 
@@ -419,8 +421,12 @@ def _no_window():
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
-def extract_audio(media_path, start, end):
-    """動画の start〜end 秒を 16kHz モノラルの float32 配列で取り出す。"""
+def extract_audio(media_path, start, end, audio_track=None):
+    """動画の start〜end 秒を 16kHz モノラルの float32 配列で取り出す。
+
+    audio_track は何本目の音声トラックを使うか（0 始まり）。None なら ffmpeg の既定。
+    OBS でマイクを別トラックに録った素材では、マイクだけを起こすと精度が上がる。
+    """
     import numpy as np
 
     ffmpeg = find_ffmpeg()
@@ -430,8 +436,10 @@ def extract_audio(media_path, start, end):
         raise TranscribeError("動画ファイルが見つかりません: %s" % media_path)
     # -ss を -i より前に置くと、3時間の配信でも先頭から読まずに飛べる
     args = [ffmpeg, "-nostdin", "-v", "error", "-ss", "%.3f" % start,
-            "-t", "%.3f" % max(0.0, end - start), "-i", media_path,
-            "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]
+            "-t", "%.3f" % max(0.0, end - start), "-i", media_path]
+    if audio_track is not None:
+        args += ["-map", "0:a:%d" % int(audio_track)]
+    args += ["-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-"]
     done = subprocess.run(args, capture_output=True, creationflags=_no_window())
     if done.returncode != 0:
         detail = done.stderr.decode("utf-8", "replace").strip().splitlines()
@@ -559,11 +567,15 @@ def _flatten(stamps):
 
 class WhisperEngine(Engine):
     name = "whisper"
+    model_name = WHISPER_MODEL
     repos = ("mobiuslabsgmbh/faster-whisper-large-v3-turbo",)
 
     def __init__(self):
         super().__init__()
         self.model = None
+        # 1回の run だけに使う設定。transcribe_segment がロックの中で入れ替える
+        self.prompt = ""           # initial_prompt（フィラーを書き残させたいときに使う）
+        self.progress = None       # progress(処理済みの秒, 全体の秒)
 
     def load(self, prefer_gpu=True):
         _use_torch_cuda_dlls()
@@ -571,7 +583,7 @@ class WhisperEngine(Engine):
         from faster_whisper import WhisperModel
 
         use_gpu = prefer_gpu and _whisper_gpu()
-        self.model = WhisperModel(WHISPER_MODEL, device="cuda" if use_gpu else "cpu",
+        self.model = WhisperModel(self.model_name, device="cuda" if use_gpu else "cpu",
                                   compute_type="float16" if use_gpu else "int8")
         self.device = "GPU" if use_gpu else "CPU"
 
@@ -583,9 +595,13 @@ class WhisperEngine(Engine):
         segments, _ = self.model.transcribe(
             samples, language="ja", word_timestamps=True, vad_filter=True,
             # 前の文脈を引き継ぐと、一度ループすると抜け出せなくなる
-            condition_on_previous_text=False)
+            condition_on_previous_text=False,
+            initial_prompt=self.prompt or None)
+        total = len(samples) / float(SAMPLE_RATE)
         words = []
         for seg in segments:
+            if self.progress:
+                self.progress(min(float(seg.end), total), total)
             for w in seg.words or []:
                 text = (w.word or "").strip()
                 if text:
@@ -669,7 +685,13 @@ def _is_gpu_library_error(exc):
                                        "cannot be loaded"))
 
 
-ENGINES = {"qwen": QwenEngine, "whisper": WhisperEngine}
+class WhisperLargeEngine(WhisperEngine):
+    name = "whisper-large-v3"
+    model_name = WHISPER_LARGE_MODEL
+    repos = ("Systran/faster-whisper-large-v3",)
+
+
+ENGINES = {"qwen": QwenEngine, "whisper": WhisperEngine, "whisper-large-v3": WhisperLargeEngine}
 
 
 class EngineHolder:
@@ -763,15 +785,19 @@ def _media_stamp(media_path):
         return "missing"
 
 
-def cache_path(media_path, start, end, engine):
-    raw = "|".join([os.path.abspath(media_path), _media_stamp(media_path),
-                    "%.3f" % start, "%.3f" % end, engine, str(TRANSCRIPT_VERSION)])
+def cache_path(media_path, start, end, engine, variant=""):
+    """variant は結果を変える追加の設定（initial_prompt・音声トラック）。空なら従来どおりの鍵。"""
+    parts = [os.path.abspath(media_path), _media_stamp(media_path),
+             "%.3f" % start, "%.3f" % end, engine, str(TRANSCRIPT_VERSION)]
+    if variant:
+        parts.append(variant)
+    raw = "|".join(parts)
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
     return os.path.join(cache.CACHE_DIR, "transcripts", "%s_%s.json.gz" % (engine, digest))
 
 
-def load_cached(media_path, start, end, engine):
-    payload = cache._read_gz(cache_path(media_path, start, end, engine))
+def load_cached(media_path, start, end, engine, variant=""):
+    payload = cache._read_gz(cache_path(media_path, start, end, engine, variant))
     if not payload or payload.get("version") != TRANSCRIPT_VERSION:
         return None
     try:
@@ -780,8 +806,8 @@ def load_cached(media_path, start, end, engine):
         return None
 
 
-def save_cached(media_path, start, end, transcript):
-    path = cache_path(media_path, start, end, transcript.engine)
+def save_cached(media_path, start, end, transcript, variant=""):
+    path = cache_path(media_path, start, end, transcript.engine, variant)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {"version": TRANSCRIPT_VERSION, "saved_at": time.time(),
                "media": os.path.abspath(media_path), "start": start, "end": end,
@@ -790,26 +816,73 @@ def save_cached(media_path, start, end, transcript):
     cache._write_gz(path, payload)
 
 
-def transcribe_segment(media_path, start, end, engine_name, report=None, use_cache=True):
+def find_covering(media_path, start, end, engine):
+    """保存済みの文字起こしのうち、同じ動画の start〜end を含むもの（Transcript）。無ければ None。
+
+    カットした後のクリップは、判定したときより細かい範囲になる。範囲ごとに起こし直すと
+    数百回になるので、判定のときに起こした広い範囲の結果から切り出して使う。
+    """
+    folder = os.path.join(cache.CACHE_DIR, "transcripts")
+    target = os.path.abspath(media_path)
+    best = None
+    for name in os.listdir(folder) if os.path.isdir(folder) else []:
+        if not (name.startswith(engine + "_") and name.endswith(".json.gz")):
+            continue
+        payload = cache._read_gz(os.path.join(folder, name))
+        if not payload or payload.get("version") != TRANSCRIPT_VERSION:
+            continue
+        if os.path.normcase(payload.get("media") or "") != os.path.normcase(target):
+            continue
+        lo, hi = float(payload.get("start", 0)), float(payload.get("end", 0))
+        if lo <= start + 1e-3 and hi >= end - 1e-3:
+            # 動画が差し替わっていたら使わない（保存より後に書き換えられたファイル）
+            try:
+                if os.path.getmtime(media_path) > float(payload.get("saved_at") or 0):
+                    continue
+            except OSError:
+                continue
+            if best is None or hi - lo < best[0]:
+                best = (hi - lo, payload)
+    if best is None:
+        return None
+    try:
+        found = Transcript.from_dict(best[1]["transcript"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    found.words = [w for w in clean_words(found.words) if w.end > start and w.start < end]
+    return found
+
+
+def transcribe_segment(media_path, start, end, engine_name, report=None, use_cache=True,
+                       prompt="", audio_track=None, progress=None):
     """区間 start〜end を文字起こしする。時刻は元の配信の秒で返す。
 
     キャッシュに残すのはエンジンの生の出力（後処理前）。ループ除去などの
     後処理を直しても、文字起こしをやり直さずに済むように。
+    prompt（initial_prompt）は whisper だけが使う。progress(済んだ秒, 全体の秒) は
+    whisper の進み具合（長い動画を1回で起こすので、途中経過が無いと止まって見える）。
     """
+    variant = ""
+    if prompt or audio_track is not None:
+        variant = "prompt=%s|track=%s" % (prompt, audio_track)
     if use_cache:
-        found = load_cached(media_path, start, end, engine_name)
+        found = load_cached(media_path, start, end, engine_name, variant)
         if found is not None:
             found.words = clean_words(found.words)
             return found
 
-    samples = extract_audio(media_path, start, end)
+    samples = extract_audio(media_path, start, end, audio_track)
     with holder.lock:
         engine = holder.get(engine_name, report)
+        engine.prompt, engine.progress = prompt, progress
         began = time.time()
-        words = run_engine(engine, samples, report)
+        try:
+            words = run_engine(engine, samples, report)
+        finally:
+            engine.prompt, engine.progress = "", None
         elapsed = time.time() - began
         device = engine.device
     raw = Transcript(engine_name, [Word(w.text, w.start + start, w.end + start) for w in words],
                      elapsed=elapsed, device=device)
-    save_cached(media_path, start, end, raw)
+    save_cached(media_path, start, end, raw, variant)
     return Transcript(engine_name, clean_words(raw.words), elapsed=elapsed, device=device)

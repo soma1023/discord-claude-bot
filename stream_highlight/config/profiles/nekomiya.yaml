@@ -1,0 +1,7 @@
+# 猫宮さんの案件。default.yaml から変えたい所だけを書く。
+name: 猫宮
+
+caption:
+  replacements:
+    ねこみや: 猫宮
+    猫みや: 猫宮

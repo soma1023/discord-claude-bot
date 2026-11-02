@@ -10,6 +10,7 @@ logs/
 bot.log
 stream_highlight/cache/
 stream_highlight/realtest/
+stream_highlight/premiere_panel/dist/
 stream_highlight/twitch_debug.json
 stream_highlight/_build_id.txt
 stream_highlight/app.log

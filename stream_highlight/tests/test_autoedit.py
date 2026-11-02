@@ -376,7 +376,8 @@ class TestSubtitles(unittest.TestCase):
 
     def test_long_word_is_split(self):
         lines = subtitles.wrap(["あ" * 40])
-        self.assertEqual([len(l) for l in lines], [16, 16, 8])
+        # 均等に分ける（16・16・8 ではなく）
+        self.assertEqual([len(l) for l in lines], [14, 14, 12])
 
     def test_srt_time_format(self):
         self.assertEqual(subtitles._srt_time(3725.5), "01:02:05,500")

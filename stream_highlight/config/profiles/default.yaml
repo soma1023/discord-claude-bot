@@ -1,0 +1,51 @@
+# 手元の動画の自動編集（python -m stream_highlight.autoedit）の既定の設定。
+# 案件ごとのプロファイル（nekomiya.yaml など）は、ここから変えたい所だけを書けばよい。
+# 書かなかった項目は、この default.yaml の値になる。
+
+name: 既定
+
+transcribe:
+  # whisper-large-v3（既定・正確）/ whisper（large-v3-turbo・速い）/ qwen（Qwen3-ASR）
+  engine: whisper-large-v3
+  # whisper にフィラーを含む文を先に見せて、「えー」「あのー」も書き起こさせる。
+  # whisper はフィラーを省きがちで、省かれると単語として見つからず消せない。
+  filler_prompt: true
+  prompt_text: "えー、あのー、えっと、まあ、そうですね。"
+
+cut:
+  # 沈黙の見つけ方
+  #   speech: 文字起こしの単語と単語の間で判定（既定）。ゲーム音が鳴っていても使える
+  #   audio : auto-editor の音量で判定。マイクだけのトラックがある素材向け（audio_track で指定）
+  silence_method: speech
+  # 隣り合う単語の間がこの秒数以上空いていたらカットする（speech のときの沈黙の判定もこれ）
+  gap_cut_sec: 0.4
+  # audio のときも、単語の間のカットを重ねてかけるか
+  gap_cut: true
+  # カット点の前後に残す余白（語尾・息継ぎを切らない）
+  pad_sec: 0.15
+  # これより短く残った断片は、前後とつなげる
+  min_piece_sec: 0.3
+  # ハイライト抽出の区間を使うとき、見せ場の前後この秒数はカットしない
+  protect_sec: 5.0
+  audio:
+    # 音量のしきい値（0〜1。auto-editor の audio:threshold）。小さいほど「静か」の判定が厳しい
+    threshold: 0.04
+    # 音のある所の前後に残す秒数（auto-editor の --margin）
+    margin_sec: 0.2
+  # 何本目の音声トラックで判定・文字起こしするか（0 = 1本目）。
+  # OBS でマイクを別トラックに録っているなら、そのトラックの番号にする
+  audio_track: 0
+  fillers:
+    enabled: true
+    # 単語がこれと一致したら（句読点・伸ばし棒の揺れは無視）カットする。
+    # 「あの」「なんか」は普通の言葉、「うん」「あー」は相づちや反応としても使うので、既定には入れていない
+    words: [えー, えーと, えーっと, えっと, あのー, うーん, んー, まあ]
+
+caption:
+  line_chars: 16              # 1行の最大文字数
+  max_lines: 2                # 1枚あたりの最大行数
+  min_show_sec: 0.7           # 表示時間の最短
+  max_show_sec: 4.0           # 表示時間の最長
+  strip_trailing_punct: true  # 行の末尾の「、」「。」を消す
+  # 表記の置換辞書（文字起こし → テロップ）
+  replacements: {}

@@ -8,9 +8,10 @@ Premiere は FCP7 XML に埋め込んだテキストを正しく読めないこ�
 editexport.Timeline と同じフレームの丸めを使うので、映像とずれない。
 """
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
-from .transcribe import join_words
+from .transcribe import Word, join_words
 
 LINE_CHARS = 16          # 1行の最大文字数
 MAX_LINES = 2
@@ -19,6 +20,11 @@ MAX_SHOW_SEC = 5.0       # これより長く同じテロップを出さない
 PAUSE_SEC = 0.6          # これ以上の間があれば別のテロップにする
 SENTENCE_END = "。！？!?…"
 SOFT_BREAK = "、，,"
+BREAK_PAUSE_SEC = 0.25   # 語と語の間がこれ以上あれば「発話の間」として折り返しの候補にする
+# 文節の終わりとみなす助詞。語（文節に近い単位）がこれで終わっていれば、その後ろで折りやすい
+BREAK_PARTICLES = "はがをにでもへとのねよ"
+TRAILING_PUNCT = "、。，．,."
+SHORT_LINE_CHARS = 2     # これ以下の文字数だけの行は作らない（前の行と折り直す）
 
 
 @dataclass
@@ -28,6 +34,8 @@ class CaptionStyle:
     max_lines: int = MAX_LINES
     min_show_sec: float = MIN_SHOW_SEC
     max_show_sec: float = MAX_SHOW_SEC
+    strip_trailing_punct: bool = False     # 各行の末尾の「、」「。」を消す
+    replacements: dict = field(default_factory=dict)    # 表記の置換辞書 {"ねこみや": "猫宮"}
 
     @classmethod
     def from_values(cls, line_chars=None, max_lines=None, min_show_sec=None, max_show_sec=None):
@@ -45,45 +53,143 @@ class CaptionStyle:
         return style
 
 
-def wrap(parts, width=LINE_CHARS):
+def _break_score(before, pause):
+    """before（語）の後ろで折り返すときの良さ。句読点 ＞ 発話の間 ＞ 助詞の後。"""
+    score = 0
+    if before[-1] in SOFT_BREAK + SENTENCE_END:
+        score += 4
+    if pause is not None and pause >= BREAK_PAUSE_SEC:
+        score += 2
+    if before[-1] in BREAK_PARTICLES:
+        score += 1
+    return score
+
+
+def wrap(parts, width=LINE_CHARS, pauses=None):
     """単語の並びを、1行 width 文字以内の行に分ける。
 
-    行は単語（文節に近い単位）の切れ目で折る。句読点の直後で折れる位置が
-    行の後半にあれば、そちらを優先する。1語で width を超えるものは途中で切る。
+    行は単語（文節に近い単位）の切れ目で折り、単語の途中では切らない。
+    溢れたときは、行の後半（width の半分以上）にある切れ目のうち、
+    句読点の後 ＞ 発話の間 ＞ 助詞の後 の順に良い所で折る。同じ良さなら行を長く取る。
+    折った結果、1〜2文字だけの行（「〜ですよ／ね」）ができたら、前の行と折り直す（_rebalance）。
+    pauses は各語の直前の間（秒）。無ければ間は見ない。
+    1語で width を超えるものだけは途中で切る。
     """
-    lines = []
+    items = [((part or "").strip(), None if pauses is None else pauses[i])
+             for i, part in enumerate(parts)]
+    items = [item for item in items if item[0]]
+    lines = []             # 行ごとの [(語, 直前の間)]
     current = []
-    for part in parts:
-        part = (part or "").strip()
-        if not part:
-            continue
-        candidate = join_words(current + [part])
-        if len(candidate) <= width:
-            current.append(part)
+    for part, pause in items:
+        texts = [c[0] for c in current]
+        if len(join_words(texts + [part])) <= width:
+            current.append((part, pause))
             continue
         if current:
-            # 句読点で終わる語の所まで戻せるなら、そこで折る
-            cut = None
-            for k in range(len(current) - 1, 0, -1):
-                if current[k - 1][-1] in SOFT_BREAK + SENTENCE_END and \
-                        len(join_words(current[:k])) >= width // 2:
-                    cut = k
-                    break
-            if cut:
-                lines.append(join_words(current[:cut]))
-                current = current[cut:]
-                if len(join_words(current + [part])) <= width:
-                    current.append(part)
+            # k 語目の前で折る候補。k == len(current) は「今の語を次の行へ送る」
+            best = None
+            for k in range(1, len(current) + 1):
+                if k < len(current) and len(join_words(texts[:k])) < width // 2:
                     continue
-            lines.append(join_words(current))
+                after = current[k][1] if k < len(current) else pause
+                score = (_break_score(texts[k - 1], after), k)
+                if best is None or score > best:
+                    best = score
+            k = best[1]
+            lines.append(current[:k])
+            current = current[k:]
+            if len(join_words([c[0] for c in current] + [part])) <= width:
+                current.append((part, pause))
+                continue
+            if current:
+                lines.append(current)
             current = []
-        while len(part) > width:
-            lines.append(part[:width])
-            part = part[width:]
-        current = [part] if part else []
+        if len(part) > width:
+            # 1語で収まらないときだけ途中で切る。「16文字＋1文字」にならないよう、均等に分ける
+            count = -(-len(part) // width)
+            size = -(-len(part) // count)
+            pieces = [part[i:i + size] for i in range(0, len(part), size)]
+            lines.extend([(piece, pause if i == 0 else None)] for i, piece in enumerate(pieces[:-1]))
+            part, pause = pieces[-1], None
+        current = [(part, pause)] if part else []
     if current:
-        lines.append(join_words(current))
-    return lines
+        lines.append(current)
+    return [join_words([w for w, _ in line]) for line in _rebalance(lines, width)]
+
+
+def _rebalance(lines, width):
+    """1〜2文字だけの行を、隣の行と合わせて折り直す。
+
+    短い行が後ろ（「〜ですよ／ね」）でも前（「どう／見られるかとか〜」）でも、2行の語をつなげ、
+    両方が SHORT_LINE_CHARS より長く width 以内に収まる切れ目のうち、折り返しの良さ
+    （_break_score）が一番高い所で折る。そういう切れ目が無く、1行に収まるならつなげる。
+    どちらもできなければそのまま。長さは行末の句読点を除いて数える（消すことがあるため）。
+    """
+    def text(line):
+        return join_words([w for w, _ in line])
+
+    def short(line):
+        return len(_strip_line(text(line))) <= SHORT_LINE_CHARS
+
+    out = []
+    for line in lines:
+        if out and (short(line) or short(out[-1])):
+            merged = out[-1] + line
+            best = None
+            for k in range(1, len(merged)):
+                head, tail = merged[:k], merged[k:]
+                if (not short(head) and not short(tail)
+                        and len(text(head)) <= width and len(text(tail)) <= width):
+                    score = (_break_score(merged[k - 1][0], merged[k][1]), k)
+                    if best is None or score > best:
+                        best = score
+            if best is not None:
+                out[-1:] = [merged[:best[1]], merged[best[1]:]]
+                continue
+            if len(text(merged)) <= width:
+                out[-1] = merged
+                continue
+        out.append(line)
+    return out
+
+
+def apply_replacements(words, table):
+    """置換辞書で表記を直す。語をまたぐ表記（「ねこ」「みや」）は1語にまとめてから直す。"""
+    if not table:
+        return list(words)
+    keys = sorted((k for k in table if k), key=len, reverse=True)
+    out = []
+    i = 0
+    while i < len(words):
+        merged = None
+        # 2〜4語をつなげたときに、境目をまたいで辞書の語が現れるか
+        for span in range(4, 1, -1):
+            if i + span > len(words):
+                continue
+            chunk = words[i:i + span]
+            text = "".join(w.text for w in chunk)
+            first_len = len(chunk[0].text)
+            last_from = len(text) - len(chunk[-1].text)
+            for key in keys:
+                at = text.find(key)
+                if at >= 0 and at < first_len and at + len(key) > last_from:
+                    merged = Word(text, chunk[0].start, chunk[-1].end)
+                    break
+            if merged:
+                i += span
+                break
+        if merged is None:
+            merged = Word(words[i].text, words[i].start, words[i].end)
+            i += 1
+        out.append(merged)
+    for w in out:
+        for key in keys:
+            w.text = w.text.replace(key, table[key])
+    return out
+
+
+def _strip_line(line):
+    return re.sub("[%s]+$" % re.escape(TRAILING_PUNCT), "", line)
 
 
 def make_cues(words, timeline, style=None):
@@ -94,6 +200,7 @@ def make_cues(words, timeline, style=None):
     """
     style = style or CaptionStyle()
     fps = timeline.fps
+    words = apply_replacements(words, style.replacements)
     placed = []        # (クリップ番号, 開始フレーム, 終了フレーム, 語)
     for w in words:
         clip = timeline.locate((w.start + w.end) / 2.0)
@@ -109,7 +216,8 @@ def make_cues(words, timeline, style=None):
         if groups:
             group = groups[-1]
             last = group[-1]
-            fits = len(wrap([g[3] for g in group] + [text], style.line_chars)) <= style.max_lines
+            fits = len(wrap([g[3] for g in group] + [text], style.line_chars,
+                            _pauses(group + [item], fps))) <= style.max_lines
             joined = (clip == last[0]
                       and (start - last[2]) / fps < PAUSE_SEC
                       and (end - group[0][1]) / fps <= style.max_show_sec
@@ -124,8 +232,10 @@ def make_cues(words, timeline, style=None):
     for group in groups:
         start = group[0][1] / fps
         end = group[-1][2] / fps
-        cues.append({"start": start, "end": end,
-                     "lines": wrap([g[3] for g in group], style.line_chars)})
+        lines = wrap([g[3] for g in group], style.line_chars, _pauses(group, fps))
+        if style.strip_trailing_punct:
+            lines = [l for l in (_strip_line(l) for l in lines) if l]
+        cues.append({"start": start, "end": end, "lines": lines})
 
     # 表示時間を整える。短いものは延ばすが、次のテロップには重ねない
     for index, cue in enumerate(cues):
@@ -136,6 +246,11 @@ def make_cues(words, timeline, style=None):
             end = min(end, limit)
         cue["end"] = max(end, cue["start"])
     return [c for c in cues if c["end"] > c["start"] and c["lines"]]
+
+
+def _pauses(group, fps):
+    """テロップにまとめた語の、それぞれ直前の間（秒）。先頭は間なし。"""
+    return [0.0] + [(group[k][1] - group[k - 1][2]) / fps for k in range(1, len(group))]
 
 
 def _srt_time(seconds):

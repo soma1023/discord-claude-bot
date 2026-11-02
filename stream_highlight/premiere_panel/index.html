@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { color: #ddd; font-size: 12px; padding: 10px; }
+    h2 { font-size: 13px; margin: 10px 0 6px; color: #fff; }
+    .row { display: flex; align-items: center; margin: 5px 0; }
+    .row label { flex: 0 0 120px; }
+    .row input[type=number], .row select { flex: 1; }
+    .buttons { display: flex; margin-top: 10px; }
+    .buttons button { flex: 1; margin-right: 6px; }
+    .buttons button:last-child { margin-right: 0; }
+    #bar { height: 6px; background: #333; border-radius: 3px; margin-top: 10px; }
+    #barFill { height: 6px; width: 0; background: #2d8ceb; border-radius: 3px; }
+    #status { margin-top: 6px; min-height: 32px; }
+    #log { width: 100%; height: 160px; margin-top: 4px; color: #ccc; font-size: 11px; }
+    .error { color: #ff7b72; }
+    .hint { color: #999; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h2>対象</h2>
+  <div class="row">
+    <label><input type="radio" name="target" id="targetSelection" checked> 選んだクリップ</label>
+  </div>
+  <div class="row">
+    <label><input type="radio" name="target" id="targetRange"> イン〜アウト（V</label>
+    <input type="number" id="rangeTrack" value="1" min="1" max="99" style="width:40px; flex:0 0 40px">
+    <span>&nbsp;のクリップ）</span>
+  </div>
+
+  <h2>設定</h2>
+  <div class="row"><label>プロファイル</label><select id="profile"></select></div>
+  <div class="row"><label>無音の最短秒数</label><input type="number" id="gapCut" step="0.05" min="0.1" max="10"></div>
+  <div class="row"><label>前後の余白（秒）</label><input type="number" id="pad" step="0.01" min="0" max="1"></div>
+  <div class="row"><label><input type="checkbox" id="fillers"> フィラーもカット</label></div>
+  <div class="row"><label><input type="checkbox" id="backup" checked> 実行前にシーケンスを複製</label></div>
+
+  <h2>カットの方式</h2>
+  <div class="row"><label style="flex:1"><input type="checkbox" id="useRazor" disabled> レーザー方式を使う（Premiere 27.1 以降・未検証）</label></div>
+  <div id="strategy" class="hint"></div>
+
+  <div class="buttons">
+    <button id="previewBtn">プレビュー</button>
+    <button id="cutBtn" uxp-variant="cta">カット実行</button>
+  </div>
+  <div class="buttons">
+    <button id="captionBtn">テロップ作成</button>
+  </div>
+  <div class="buttons">
+    <button id="clearBtn">プレビューのマーカーを消す</button>
+    <button id="diagnoseBtn">診断</button>
+  </div>
+
+  <div id="bar"><div id="barFill"></div></div>
+  <div id="status" class="hint">サーバー（python -m stream_highlight.server）に接続しています…</div>
+  <div class="hint" style="margin-top:8px">記録（選んでコピーできます）</div>
+  <textarea id="log" readonly></textarea>
+
+  <script src="main.js"></script>
+</body>
+</html>

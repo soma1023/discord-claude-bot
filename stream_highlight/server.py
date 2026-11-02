@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import autoedit, cache, editexport, paths, profiles, retake, transcribe
+from . import autoedit, cache, deps, editexport, localedit, paths, profiles, retake, transcribe
 from . import subtitles as captions      # EditExportRequest.subtitles（ON/OFF）と名前がぶつかるため
 from . import autocut as cutter
 from . import code_version
@@ -268,6 +268,117 @@ def reset_profile(req: ProfileRequest):
     info, _ = _chat_or_404(req.video_key)
     profiles.remove(info)
     return profiles.describe(info)
+
+
+class PanelAnalyzeRequest(BaseModel):
+    """Premiere のオートカットパネルから送られる、クリップ1つ分の判定の依頼。"""
+    media_path: str
+    source_in: float               # 素材の中で使っている範囲（秒）
+    source_out: float
+    profile: str = localedit.DEFAULT_PROFILE
+    # パネルで調整した値。None ならプロファイルのまま
+    gap_cut_sec: float | None = None
+    pad_sec: float | None = None
+    fillers: bool | None = None
+
+
+def _panel_settings(profile, **overrides):
+    # プロファイルは名前で選ばせる（HTTP から任意の yaml のパスを読ませない）
+    if profile not in localedit.available_profiles():
+        raise HTTPException(status_code=400, detail="プロファイル「%s」はありません。" % profile)
+    try:
+        flat = localedit.flatten_profile(localedit.load_profile(profile))
+        flat.update({k: v for k, v in overrides.items() if v is not None})
+        return localedit.build_settings(flat)
+    except localedit.EditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/panel/profiles")
+def panel_profiles():
+    """パネルのプロファイル選択と、調整欄の初期値。"""
+    rows = []
+    for name in localedit.available_profiles():
+        try:
+            settings = _panel_settings(name)
+        except HTTPException:
+            continue
+        rows.append({"name": name, "label": settings.profile,
+                     "gap_cut_sec": settings.gap_cut_sec, "pad_sec": settings.pad_sec,
+                     "fillers": settings.fillers, "engine": settings.engine,
+                     "silence_method": settings.silence_method})
+    return {"profiles": rows, "default": localedit.DEFAULT_PROFILE}
+
+
+@app.post("/api/panel/analyze")
+def panel_analyze(req: PanelAnalyzeRequest):
+    """クリップの素材と使用範囲から、残す区間（素材の秒）を決める。進捗は /api/job/{id}。"""
+    settings = _panel_settings(req.profile, gap_cut_sec=req.gap_cut_sec, pad_sec=req.pad_sec,
+                               fillers=req.fillers)
+    media_path = req.media_path.strip().strip('"')
+    if not os.path.isfile(media_path):
+        raise HTTPException(status_code=400, detail="素材ファイルが見つかりません: %s" % media_path)
+    if req.source_out - req.source_in < 0.1:
+        raise HTTPException(status_code=400, detail="クリップが短すぎます。")
+    found = deps.problems(settings.engine, settings.silence_method)
+    if found:
+        raise HTTPException(status_code=400, detail=" ".join(message for _, message in found))
+
+    def work(report):
+        try:
+            return localedit.analyze_range(media_path, max(0.0, req.source_in), req.source_out,
+                                           settings, report=report)
+        except (localedit.EditError, deps.MissingDependency) as exc:
+            raise ValueError(str(exc))
+
+    job = manager.submit_task(work, "判定の準備中…")
+    return {"job_id": job.id}
+
+
+class PanelClip(BaseModel):
+    media_path: str
+    source_in: float
+    source_out: float
+    seq_start: float               # シーケンスでの開始位置（秒）
+
+
+class PanelCaptionsRequest(BaseModel):
+    """Premiere のパネルから送られる、テロップを作る依頼。"""
+    clips: list[PanelClip]
+    fps: float
+    profile: str = localedit.DEFAULT_PROFILE
+    project_path: str = ""         # SRT はこのプロジェクトファイルと同じフォルダに書く
+    name: str = "テロップ"
+
+
+@app.post("/api/panel/captions")
+def panel_captions(req: PanelCaptionsRequest):
+    """タイムラインのクリップの並びから SRT を作り、プロジェクトの横に保存する。進捗は /api/job/{id}。"""
+    settings = _panel_settings(req.profile)
+    if not req.clips:
+        raise HTTPException(status_code=400, detail="テロップを付けるクリップがありません。")
+    if not (1.0 <= req.fps <= 240.0):
+        raise HTTPException(status_code=400, detail="シーケンスのフレームレートを読めませんでした。")
+    folder = os.path.dirname(req.project_path.strip()) if req.project_path.strip() else ""
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="プロジェクトを保存してから使ってください（保存先が分かりません）。")
+    safe = "".join("_" if ch in '\\/:*?"<>|' else ch for ch in req.name).strip() or "テロップ"
+    clips = [c.model_dump() for c in req.clips]
+    for clip in clips:
+        clip["media_path"] = clip["media_path"].strip().strip('"')
+
+    def work(report):
+        try:
+            srt, count = localedit.captions_for_clips(clips, req.fps, settings, report=report)
+        except (localedit.EditError, deps.MissingDependency) as exc:
+            raise ValueError(str(exc))
+        path = localedit.unique_path(os.path.join(folder, safe[:80] + "_テロップ.srt"))
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(srt)
+        return {"srt_path": path, "cues": count}
+
+    job = manager.submit_task(work, "テロップの準備中…")
+    return {"job_id": job.id}
 
 
 @app.get("/api/realtest/progress")

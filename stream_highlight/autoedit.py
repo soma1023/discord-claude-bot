@@ -139,3 +139,16 @@ def run(info, peaks, options, fmt="xml", margin_sec=editexport.DEFAULT_MARGIN_SE
         result["srt_content"] = subtitles.to_srt(cues)
         result["cues"] = len(cues)
     return result
+
+
+def main(argv=None):
+    """手元の動画を自動編集する CLI（中身は localedit.py）。
+
+    python -m stream_highlight.autoedit input.mp4 --profile nekomiya
+    """
+    from . import localedit
+    return localedit.main(argv)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

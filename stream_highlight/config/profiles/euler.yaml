@@ -1,0 +1,6 @@
+# euler さんの案件。default.yaml から変えたい所だけを書く（今は既定のまま）。
+name: euler
+
+cut: {}
+caption:
+  replacements: {}

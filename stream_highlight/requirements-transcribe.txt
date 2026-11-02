@@ -14,3 +14,7 @@ qwen-asr==0.0.6
 faster-whisper>=1.2.1
 imageio-ffmpeg>=0.5
 anthropic>=0.40
+# Local video CLI (python -m stream_highlight.autoedit): profiles are yaml.
+pyyaml>=6.0
+# Optional: only for "silence_method: audio". Downloads its own binary on first run.
+auto-editor>=29.3

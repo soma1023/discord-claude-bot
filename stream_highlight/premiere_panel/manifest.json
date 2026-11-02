@@ -1,0 +1,27 @@
+{
+  "id": "com.streamhighlight.autocut",
+  "name": "オートカット",
+  "version": "0.3.0",
+  "main": "index.html",
+  "host": {
+    "app": "premierepro",
+    "minVersion": "25.6.0"
+  },
+  "manifestVersion": 5,
+  "requiredPermissions": {
+    "network": {
+      "domains": "all"
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "autocutPanel",
+      "label": { "default": "オートカット" },
+      "minimumSize": { "width": 260, "height": 360 },
+      "maximumSize": { "width": 2000, "height": 2000 },
+      "preferredDockedSize": { "width": 300, "height": 520 },
+      "preferredFloatingSize": { "width": 320, "height": 560 }
+    }
+  ]
+}
