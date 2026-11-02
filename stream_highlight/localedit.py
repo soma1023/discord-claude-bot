@@ -667,12 +667,17 @@ def run(media_path, settings, segments_from=None, out_dir=None, fps=None, use_ca
 
         progress(0.02 + 0.88 * done_sec / total, head + "…")
         began = time.time()
-        result = transcribe.transcribe_segment(
-            media_path, start, end, settings.engine, report=note, use_cache=use_cache,
-            prompt=settings.prompt, audio_track=settings.audio_track or None, progress=advance)
+        # 細かい区間を指定したときも、広い範囲を起こした保存分があれば切り出して使う
+        result = transcribe.find_covering(media_path, start, end, settings.engine) \
+            if use_cache else None
+        if result is None:
+            result = transcribe.transcribe_segment(
+                media_path, start, end, settings.engine, report=note, use_cache=use_cache,
+                prompt=settings.prompt, audio_track=settings.audio_track or None, progress=advance)
         if time.time() - began < 1.0 and result.elapsed > 1.0:
-            cached += 1
-        transcribe_sec += result.elapsed
+            cached += 1     # 保存分を使った。起こした時間は数えない（区間ごとに重ねて数えてしまう）
+        else:
+            transcribe_sec += result.elapsed
         device = device or result.device
         words_by_segment.append(result.words)
         done_sec += end - start
