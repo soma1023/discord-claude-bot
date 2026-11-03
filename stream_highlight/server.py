@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import autoedit, cache, deps, editexport, localedit, paths, profiles, retake, transcribe
+from . import autoedit, cache, deps, editexport, localedit, paths, prproj, profiles, retake, transcribe
 from . import subtitles as captions      # EditExportRequest.subtitles（ON/OFF）と名前がぶつかるため
 from . import autocut as cutter
 from . import code_version
@@ -379,6 +379,26 @@ def panel_captions(req: PanelCaptionsRequest):
 
     job = manager.submit_task(work, "テロップの準備中…")
     return {"job_id": job.id}
+
+
+class PanelCaptionLinesRequest(BaseModel):
+    """テロップの行数を、保存済みのプロジェクトファイルから読む依頼。"""
+    project_path: str
+
+
+@app.post("/api/panel/caption_lines")
+def panel_caption_lines(req: PanelCaptionLinesRequest):
+    """グラフィックのテロップごとの {start, end, lines}（ticks）。Premiere がテキストを渡さないための代わり。"""
+    path = req.project_path.strip().strip('"')
+    if not path.lower().endswith(".prproj") or not os.path.isfile(path):
+        raise HTTPException(status_code=400, detail="プロジェクトを保存してから使ってください（プロジェクトファイルが見つかりません）。")
+    try:
+        found = prproj.caption_lines(path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="プロジェクトファイルを読めませんでした: %s" % exc)
+    # lines は画面に見える行数（自動の折り返しを含み、枠からはみ出して見えない行は除く）
+    return {"captions": [{"start": c["start"], "end": c["end"], "lines": c["lines"],
+                          "wrapped_lines": c["wrapped_lines"], "text": c["text"][:40]} for c in found]}
 
 
 @app.get("/api/realtest/progress")

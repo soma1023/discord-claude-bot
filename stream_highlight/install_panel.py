@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 PANEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "premiere_panel")
-FILES = ("manifest.json", "index.html", "main.js", "cutplan.js")
+FILES = ("manifest.json", "index.html", "main.js", "cutplan.js", "captionalign.js")
 PANEL_NAME = "オートカット"       # manifest.json の name。インストーラーはこの名前で外す
 INSTALLER = os.path.join(
     os.environ.get("CommonProgramFiles", r"C:\Program Files\Common Files"),

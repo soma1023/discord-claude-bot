@@ -305,10 +305,70 @@ class TestManifest(unittest.TestCase):
         with open(os.path.join(PANEL, "index.html"), encoding="utf-8") as fh:
             html = fh.read()
         for element in ("previewBtn", "cutBtn", "captionBtn", "clearBtn", "diagnoseBtn", "useRazor",
-                        "strategy"):
+                        "strategy", "alignBtn", "lineHeight", "keepX", "alignDryRun"):
             self.assertIn('id="%s"' % element, html)
-        for name in (manifest["main"], "main.js", "cutplan.js"):
+        for name in (manifest["main"], "main.js", "cutplan.js", "captionalign.js"):
             self.assertTrue(os.path.isfile(os.path.join(PANEL, name)), name)
+
+
+ALIGN_CHECK = r"""
+const assert = require("assert");
+const a = require(process.argv[2]);
+assert.strictEqual(a.lineCount("一行目\r二行目"), 2);
+assert.strictEqual(a.lineCount("一行"), 1);
+assert.strictEqual(a.lineCount("一\n\n"), 1);
+assert.strictEqual(a.textOf("\u0000{\"mTextParam\":{\"mText\":\"あ\\rい\",\"mFontSize\":64}}"), "あ\rい");
+assert.strictEqual(a.textOf("ただの文字"), "ただの文字");
+assert.strictEqual(a.fontSizeOf("{\"x\":{\"mFontSize\":64}}"), 64);
+// 割合: 2行は 1行分（80/1080）上、1行はそのまま、3行は2行分上
+let r = a.planAlign([{lines: 1, x: 0.5, y: 0.85}, {lines: 2, x: 0.5, y: 0.85}, {lines: 3, x: 0.4, y: 0.1}], 80, 1080);
+assert.strictEqual(r.unit, "割合");
+assert.ok(!r.moves[0].changed);
+assert.ok(Math.abs(r.moves[1].to.y - (0.85 - 80 / 1080)) < 1e-9);
+assert.ok(Math.abs(r.moves[2].to.y - (0.85 - 160 / 1080)) < 1e-9);
+assert.strictEqual(r.moves[2].to.x, 0.5);
+// ピクセル・横はそのまま
+r = a.planAlign([{lines: 1, x: 960, y: 950}, {lines: 2, x: 900, y: 950}], 80, 1080, {keepX: true});
+assert.strictEqual(r.unit, "px");
+assert.strictEqual(r.moves[1].to.y, 870);
+assert.strictEqual(r.moves[1].to.x, 900);
+// 1行のテロップが無ければ止める
+assert.throws(() => a.planAlign([{lines: 2, x: 0.5, y: 0.8}], 80, 1080));
+// クリップのモーションで 0.06 下げているものが多数。モーションが既定（中央）のものは、その分テキストを下げる
+r = a.planAlign([
+  {lines: 1, x: 0.125, y: 0.65, dx: 0, dy: 0.06},
+  {lines: 1, x: 0.125, y: 0.65, dx: 0, dy: 0.06},
+  {lines: 1, x: 0.125, y: 0.65, dx: 0, dy: 0},
+  {lines: 2, x: 0.125, y: 0.65, dx: 0, dy: 0},
+], 108, 1080);
+assert.ok(Math.abs(r.base.y - 0.71) < 1e-9);
+assert.ok(!r.moves[0].changed);
+assert.ok(Math.abs(r.moves[2].to.y - 0.71) < 1e-9);
+assert.ok(Math.abs(r.moves[3].to.y - 0.61) < 1e-9);
+// 下段の位置をピクセルで決める（1行のテロップが無くてもよい）。モーションのずれは引く
+r = a.planAlign([
+  {lines: 2, x: 0.125, y: 0.52, dx: 0, dy: 0.06},
+  {lines: 1, x: 0.125, y: 0.65, dx: 0, dy: 0},
+], 108, 1080, {baseYPx: 918});
+assert.ok(Math.abs(r.base.y - 0.85) < 1e-9);
+assert.ok(Math.abs(r.moves[0].to.y - (0.85 - 0.1 - 0.06)) < 1e-9);
+assert.ok(Math.abs(r.moves[1].to.y - 0.85) < 1e-9);
+console.log("ok");
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node が無い")
+class TestCaptionAlignJs(unittest.TestCase):
+    def test_captionalign(self):
+        folder = tempfile.mkdtemp(prefix="sh_align_")
+        self.addCleanup(shutil.rmtree, folder, True)
+        script = os.path.join(folder, "check.js")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(ALIGN_CHECK)
+        done = subprocess.run(["node", script, os.path.join(PANEL, "captionalign.js")],
+                              capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "ok")
 
 
 if __name__ == "__main__":

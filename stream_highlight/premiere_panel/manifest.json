@@ -1,7 +1,7 @@
 {
   "id": "com.streamhighlight.autocut",
   "name": "オートカット",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "main": "index.html",
   "host": {
     "app": "premierepro",

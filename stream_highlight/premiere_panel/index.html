@@ -48,6 +48,16 @@
   <div class="buttons">
     <button id="captionBtn">テロップ作成</button>
   </div>
+
+  <h2>テロップの下段をそろえる</h2>
+  <div class="hint">グラフィックにしたテロップを選んで押す。1行のテロップの位置に、どれも一番下の行がそろう。</div>
+  <div class="row"><label>1行の高さ（px）</label><input type="number" id="lineHeight" step="1" min="1" max="1000" placeholder="空なら自動"></div>
+  <div class="row"><label>下段の位置 Y（px）</label><input type="number" id="baseY" step="1" min="1" max="10000" placeholder="空なら1行のテロップに合わせる"></div>
+  <div class="row"><label style="flex:1"><input type="checkbox" id="keepX"> 横の位置はそのまま</label></div>
+  <div class="row"><label style="flex:1"><input type="checkbox" id="alignDryRun" checked> 確認だけ（変更しない）</label></div>
+  <div class="buttons">
+    <button id="alignBtn">下段をそろえる</button>
+  </div>
   <div class="buttons">
     <button id="clearBtn">プレビューのマーカーを消す</button>
     <button id="diagnoseBtn">診断</button>

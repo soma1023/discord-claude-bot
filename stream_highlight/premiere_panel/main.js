@@ -16,6 +16,7 @@
 
 const ppro = require("premierepro");
 const plan = require("./cutplan.js");
+const align = require("./captionalign.js");
 
 const SERVER = "http://127.0.0.1:8765";
 const MARKER_NAME = "オートカット";
@@ -47,7 +48,7 @@ function log(message) {
 
 function setBusy(value) {
   busy = value;
-  for (const id of ["previewBtn", "cutBtn", "captionBtn", "clearBtn", "diagnoseBtn"]) $(id).disabled = value;
+  for (const id of ["previewBtn", "cutBtn", "captionBtn", "alignBtn", "clearBtn", "diagnoseBtn"]) $(id).disabled = value;
 }
 
 function applyProfile(name) {
@@ -632,6 +633,260 @@ async function makeCaptions() {
     : "「ファイル」→「読み込み」で次の SRT を読み込み、シーケンスの先頭へドラッグしてください: " + result.srt_path));
 }
 
+// ---------------------------------------------------------------- テロップの下段をそろえる
+
+// グラフィックにアップグレードしたテロップを、行数を見て並べ直す。
+// 1行のテロップの位置を下段とし、n 行のものは (n-1) 行分だけ上へ。テキストやスタイルは触らない。
+const SOURCE_TEXT = /ソーステキスト|Source Text/i;
+const POSITION = /^(位置|Position)$/i;
+
+function unwrapValue(v) {
+  for (let i = 0; i < 3 && v && typeof v === "object" && "value" in v; i++) v = v.value;
+  return v;
+}
+
+function pointOf(v) {
+  v = unwrapValue(v);
+  if (v && typeof v.x === "number" && typeof v.y === "number") return { x: v.x, y: v.y };
+  if (Array.isArray(v) && v.length >= 2) return { x: Number(v[0]), y: Number(v[1]) };
+  return null;
+}
+
+// 記録に出すための、値の先頭300文字
+function sampleOf(v) {
+  let text;
+  try { text = typeof v === "string" ? v : JSON.stringify(v); } catch (err) { text = String(v); }
+  text = String(text);
+  return text.length > 300 ? text.slice(0, 300) + "…（全 " + text.length + " 文字）" : text;
+}
+
+function describeValue(v) {
+  const kind = v && v.constructor && v.constructor.name ? v.constructor.name : typeof v;
+  return kind + " " + sampleOf(v);
+}
+
+// 位置の値を作る（版によって作り方が違うので、順に試す）
+function makePoint(original, x, y) {
+  try { if (typeof ppro.PointF === "function") return new ppro.PointF(x, y); } catch (err) { /* 次へ */ }
+  try { if (ppro.PointF && typeof ppro.PointF.create === "function") return ppro.PointF.create(x, y); } catch (err) { /* 次へ */ }
+  const raw = unwrapValue(original);
+  if (raw && typeof raw === "object" && "x" in raw) {
+    try { raw.x = x; raw.y = y; return raw; } catch (err) { /* 書き換えられない */ }
+  }
+  return { x, y };
+}
+
+// クリップの中から「ソーステキスト」と同じ部品にある「位置」を探す。
+async function textLayerOf(project, item) {
+  const chain = await item.getComponentChain();
+  const components = [];
+  project.lockedAccess(() => {
+    const count = chain.getComponentCount();
+    for (let i = 0; i < count; i++) components.push(chain.getComponentAtIndex(i));
+  });
+  const layers = [];
+  const seen = [];
+  let motion = null;
+  for (const component of components) {
+    const name = await component.getDisplayName();
+    let text = null, position = null;
+    const isMotion = /^(モーション|Motion)$/.test(name);
+    const params = [];
+    for (let i = 0; i < component.getParamCount(); i++) {
+      const param = component.getParam(i);
+      params.push(param.displayName);
+      if (isMotion && !motion && POSITION.test(param.displayName)) motion = param;
+      else if (!text && SOURCE_TEXT.test(param.displayName)) text = param;
+      // ソーステキストより後ろの最初の「位置」が、そのテキストの位置
+      else if (text && !position && POSITION.test(param.displayName)) position = param;
+    }
+    seen.push(name + ": " + params.join(" / "));
+    if (text && position) layers.push({ component: name, text, position });
+  }
+  return { layers, seen, motion };
+}
+
+async function readCaption(project, item) {
+  const startTicks = ticksOf(await item.getStartTime());
+  const where = clock(startTicks);
+  const { layers, seen, motion } = await textLayerOf(project, item);
+  if (layers.length !== 1) {
+    return { where, skip: layers.length ? "テキストが " + layers.length + " 個あるグラフィック" : "テキストの無いクリップ", seen };
+  }
+  const { text, position } = layers[0];
+  let rawText = null;
+  try { rawText = unwrapValue(await text.getStartValue()); } catch (err) { /* 読めない */ }
+  let str = align.textOf(rawText);
+  if (str === null) {
+    try { str = await item.getName(); } catch (err) { /* 名前も読めない */ }
+  }
+  let keyframes = 0;
+  try { if (position.isTimeVarying()) keyframes = position.getKeyframeListAsTickTimes().length; } catch (err) { /* */ }
+  const startValue = await position.getStartValue();
+  const point = pointOf(startValue);
+  if (!point) return { where, skip: "位置の値を読めない（" + JSON.stringify(unwrapValue(startValue)) + "）", seen };
+  if (keyframes > 1) return { where, skip: "位置にキーフレームがある" };
+  return {
+    where, item, param: position, startValue, x: point.x, y: point.y,
+    startTicks, endTicks: ticksOf(await item.getEndTime()), fromName: rawText === null,
+    motion: motion ? pointOf(await motion.getStartValue()) : null,
+    text: str, lines: align.lineCount(str), fontSize: align.fontSizeOf(rawText),
+    rawType: typeof rawText, rawText,
+  };
+}
+
+// Premiere 26 はソーステキストの値を渡さない（null）。そのときは保存済みのプロジェクトファイルから
+// サーバーに行数を読んでもらい、シーケンス上の開始・終了の位置で突き合わせる。
+async function linesFromProject(project, captions) {
+  const missing = captions.filter((c) => c.fromName);
+  if (!missing.length) return;
+  at("プロジェクトファイルから行数を読む");
+  setStatus("プロジェクトファイルからテロップの行数を読んでいます…");
+  const data = await request("/api/panel/caption_lines", { project_path: project.path || "" });
+  const byRange = new Map();
+  for (const c of data.captions) byRange.set(c.start + "-" + c.end, c);
+  const unmatched = [];
+  for (const c of missing) {
+    const found = byRange.get(Number(c.startTicks) + "-" + Number(c.endTicks));
+    if (found) { c.text = found.text; c.lines = found.lines; }
+    else unmatched.push(c);
+  }
+  log("プロジェクトファイルから行数を読みました（" + (missing.length - unmatched.length) + " / " + missing.length + " 枚）。");
+  if (unmatched.length * 2 > missing.length) {
+    throw new Error("プロジェクトファイルに無いテロップが " + unmatched.length + " 枚あります。" +
+                    "保存（Ctrl+S）してからもう一度押してください。");
+  }
+  // 少しだけ見つからないものは、行数が分からないので動かさない
+  for (const c of unmatched) {
+    log("飛ばしました（" + c.where + "）: プロジェクトファイルで行数を読めない（保存前に足したもの？）");
+    captions.splice(captions.indexOf(c), 1);
+  }
+}
+
+// クリップの「モーション」の位置（既定は画面の中央）が動いていると、テキストの位置が同じでも
+// 見た目の高さが変わる。そのずれをテキストの位置と同じ単位で dx, dy に入れる。
+function addMotionOffsets(captions, frameWidth, frameHeight) {
+  const normalized = align.isNormalized(captions);
+  let shifted = 0;
+  for (const c of captions) {
+    if (!c.motion) { c.dx = 0; c.dy = 0; continue; }
+    const m = c.motion;
+    // モーションの値も割合（0〜1）か px か。テキストの単位に合わせる
+    const motionNormalized = Math.abs(m.x) <= 2 && Math.abs(m.y) <= 2;
+    let dx = motionNormalized ? m.x - 0.5 : (m.x - frameWidth / 2) / frameWidth;
+    let dy = motionNormalized ? m.y - 0.5 : (m.y - frameHeight / 2) / frameHeight;
+    if (!normalized) { dx *= frameWidth; dy *= frameHeight; }
+    c.dx = dx; c.dy = dy;
+    if (Math.abs(dx) > 1e-4 || Math.abs(dy) > 1e-4) shifted++;
+  }
+  if (shifted) log("クリップのモーションで位置をずらしているテロップ: " + shifted + " 枚（見た目の位置でそろえます）。");
+}
+
+async function frameWidthOf(sequence) {
+  try {
+    const size = await sequence.getFrameSize();
+    const w = size && (size.width || (size.right !== undefined ? size.right - size.left : 0));
+    if (w > 0) return w;
+  } catch (err) { /* 読めない版 */ }
+  return 1920;
+}
+
+async function frameHeightOf(sequence) {
+  try {
+    const size = await sequence.getFrameSize();
+    const h = size && (size.height || (size.bottom !== undefined ? size.bottom - size.top : 0));
+    if (h > 0) return h;
+  } catch (err) { /* 読めない版 */ }
+  return 1080;
+}
+
+async function alignCaptions() {
+  at("プロジェクトとシーケンスの読み取り");
+  const project = await ppro.Project.getActiveProject();
+  const sequence = project && await project.getActiveSequence();
+  if (!sequence) throw new Error("シーケンスを開いてください。");
+  at("選んだテロップの読み取り");
+  const selection = await sequence.getSelection();
+  const items = (await selection.getTrackItems()).filter((item) => item instanceof ppro.VideoClipTrackItem);
+  if (!items.length) throw new Error("タイムラインでテロップ（グラフィック）を選んでください。");
+
+  const captions = [];
+  let shownSeen = false;
+  for (let k = 0; k < items.length; k++) {
+    const c = await readCaption(project, items[k]);
+    if (c.skip) {
+      log("飛ばしました（" + c.where + "）: " + c.skip);
+      if (c.seen && !shownSeen) { log("  このクリップの中身: " + c.seen.join(" | ")); shownSeen = true; }
+      continue;
+    }
+    captions.push(c);
+    if (k % 20 === 0) { setProgress(0.6 * k / items.length); setStatus("読み取り中… " + k + " / " + items.length); }
+  }
+  if (!captions.length) throw new Error("そろえられるテロップがありませんでした（理由は下の記録）。");
+  await linesFromProject(project, captions);
+  const unknown = captions.filter((c) => c.text === null);
+  if (unknown.length) {
+    throw new Error("テロップの文字を読めず、行数が分かりませんでした（" + unknown.length + " 枚）。" +
+                    "記録をコピーして送ってください。");
+  }
+
+  at("1行の高さを決める");
+  const frameHeight = await frameHeightOf(sequence);
+  let lineHeight = parseFloat($("lineHeight").value);
+  if (!(lineHeight > 0)) {
+    const size = captions.map((c) => c.fontSize).find((s) => s > 0);
+    if (!size) {
+      // フォントサイズのありかを調べられるよう、ソーステキストの生の値を記録に出す
+      log("ソーステキストの値（" + captions[0].where + "、型: " + captions[0].rawType + "）: " + sampleOf(captions[0].rawText));
+      throw new Error("1行の高さ（px）を入れてください。この版の Premiere はテロップの文字の情報を渡さないため、" +
+                      "フォントサイズを自動で読めません。プロパティパネルでフォントサイズを見て、その1.2倍くらいを入れてください。");
+    }
+    lineHeight = Math.round(size * 1.2);
+    $("lineHeight").value = lineHeight;
+    log("1行の高さをフォントサイズ " + size + " から " + lineHeight + " px と見積もりました。");
+  }
+  addMotionOffsets(captions, await frameWidthOf(sequence), frameHeight);
+  const result = align.planAlign(captions, lineHeight, frameHeight,
+                                {keepX: $("keepX").checked, baseYPx: parseFloat($("baseY").value)});
+  const moving = result.moves.filter((m) => m.changed);
+  const byLines = {};
+  for (const c of captions) byLines[c.lines] = (byLines[c.lines] || 0) + 1;
+  const fmt = (p) => result.unit === "px" ? "(" + p.x.toFixed(0) + ", " + p.y.toFixed(0) + ")"
+                                           : "(" + p.x.toFixed(4) + ", " + p.y.toFixed(4) + ")";
+  log("テロップ " + captions.length + " 枚（" + Object.keys(byLines).map((n) => n + "行: " + byLines[n] + "枚").join("、") +
+      "）。下段の位置 " + fmt(result.base) + "（単位: " + result.unit + "、画面の高さ " + frameHeight + "）");
+  for (const m of moving.slice(0, 15)) {
+    const c = captions[m.index];
+    log("  " + c.where + " " + m.lines + "行「" + c.text.replace(/\s+/g, " ").slice(0, 20) + "」 " + fmt(m.from) + " → " + fmt(m.to));
+  }
+  if (moving.length > 15) log("  …ほか " + (moving.length - 15) + " 枚");
+
+  if ($("alignDryRun").checked) {
+    setProgress(1);
+    setStatus("確認だけしました: 動かすテロップ " + moving.length + " 枚（変更はしていません）。" +
+              "記録を見て問題なければ「確認だけ」を外してもう一度押してください。");
+    return;
+  }
+  if (!moving.length) { setProgress(1); setStatus("すでにそろっています。"); return; }
+
+  at("テロップの位置を書き換える");
+  let ok = false;
+  project.lockedAccess(() => {
+    ok = project.executeTransaction((compound) => {
+      for (const m of moving) {
+        const c = captions[m.index];
+        const point = makePoint(c.startValue, m.to.x, m.to.y);
+        if (m === moving[0]) log("位置に書き込む値: " + describeValue(point));
+        const keyframe = c.param.createKeyframe(point);
+        compound.addAction(c.param.createSetValueAction(keyframe, true));
+      }
+    }, "テロップの下段をそろえる");
+  });
+  if (!ok) throw new Error("位置を書き換えられませんでした（タイムラインは変更していません）。");
+  setProgress(1);
+  setStatus("テロップ " + moving.length + " 枚の位置をそろえました。戻すときは Ctrl+Z 1回。");
+}
+
 // 選んだクリップに付いているものを記録に書き出す（判定の食い違いを調べるとき用）
 async function diagnose() {
   const ctx = await prepare();
@@ -669,6 +924,7 @@ wire("previewBtn", preview);
 wire("cutBtn", cut);
 wire("clearBtn", clearMarkers);
 wire("captionBtn", makeCaptions);
+wire("alignBtn", alignCaptions);
 wire("diagnoseBtn", diagnose);
 loadProfiles();
 refreshStrategy();
