@@ -65,10 +65,16 @@ def text_style(blob, text):
         return None, None, None, None
     end += len(raw)
     width = height = None
-    if len(blob) >= BOX_OFFSET + 8:
-        height, width = struct.unpack_from("<ff", blob, BOX_OFFSET)
-        if not (100 <= width <= 8000 and 20 <= height <= 4000):
-            width = height = None
+    # 枠の高さと幅は、ふつう BOX_OFFSET にあるが、ずれていることがある（100.0 の 16〜24 バイト後ろに続く）
+    starts = [BOX_OFFSET] + [i + gap for i in range(0, max(0, end - len(raw) - 32), 4)
+                             if struct.unpack_from("<f", blob, i)[0] == 100.0 for gap in (16, 20, 24)]
+    for start in starts:
+        if len(blob) < start + 8:
+            continue
+        height, width = struct.unpack_from("<ff", blob, start)
+        if 100 <= width <= 8000 and 20 <= height <= 4000:
+            break
+        width = height = None
     size = None
     for i in range(end + (-end) % 4, len(blob) - 3, 4):
         value = struct.unpack_from("<f", blob, i)[0]
