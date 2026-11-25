@@ -371,5 +371,19 @@ class TestCaptionAlignJs(unittest.TestCase):
         self.assertEqual(done.stdout.strip(), "ok")
 
 
+class TestInstallPanel(unittest.TestCase):
+    def test_build_writes_launcher_module(self):
+        import zipfile
+        from stream_highlight import install_panel
+        with tempfile.TemporaryDirectory() as folder:
+            out = install_panel.build(os.path.join(folder, "a.ccx"), r"C:\x\サーバー起動.lnk")
+            with zipfile.ZipFile(out) as package:
+                names = package.namelist()
+                module = package.read(install_panel.LAUNCH_MODULE).decode("utf-8")
+        self.assertIn("main.js", names)
+        self.assertEqual(json.loads(module[len("module.exports = "):].rstrip().rstrip(";")),
+                         {"launcher": r"C:\x\サーバー起動.lnk"})
+
+
 if __name__ == "__main__":
     unittest.main()

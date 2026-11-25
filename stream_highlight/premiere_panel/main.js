@@ -19,6 +19,9 @@ const plan = require("./cutplan.js");
 const align = require("./captionalign.js");
 
 const SERVER = "http://127.0.0.1:8765";
+// install_panel.py がパネルに書き込む、サーバーを起動するショートカットの場所（無ければ自動起動しない）
+let LAUNCHER = null;
+try { LAUNCHER = require("./serverlaunch.js").launcher; } catch (err) { /* 手で入れたパネル */ }
 const MARKER_NAME = "オートカット";
 const POLL_MS = 700;
 
@@ -67,17 +70,48 @@ function clock(ticks) {
 
 // ---------------------------------------------------------------- サーバー
 
+// サーバーが止まっていれば、ショートカットを開いて起動し、応答するまで待つ。起動できたら true。
+let starting = null;
+async function startServer() {
+  if (!LAUNCHER) return false;
+  if (!starting) {
+    starting = (async () => {
+      setStatus("サーバーを起動しています…");
+      const error = await require("uxp").shell.openPath(LAUNCHER);
+      if (error) throw new Error("サーバーを起動できませんでした: " + error);
+      for (let i = 0; i < 60; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          await fetch(SERVER + "/api/panel/profiles");
+          return true;
+        } catch (err) { /* まだ起動中 */ }
+      }
+      return false;
+    })().finally(() => { starting = null; });
+  }
+  return starting;
+}
+
 async function request(path, body) {
+  const send = () => fetch(SERVER + path, body === undefined ? {} : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   let response;
   try {
-    response = await fetch(SERVER + path, body === undefined ? {} : {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    response = await send();
   } catch (err) {
-    throw new Error("サーバーに接続できません（" + SERVER + "）。python -m stream_highlight.server を" +
-                    "起動してください。詳しい原因: " + (err && err.message ? err.message : err));
+    let reason = err && err.message ? err.message : err;
+    try {
+      if (await startServer()) response = await send();
+    } catch (startErr) {
+      reason = startErr.message;
+    }
+    if (!response) {
+      throw new Error("サーバーに接続できません（" + SERVER + "）。python -m stream_highlight.server を" +
+                      "起動してください。詳しい原因: " + reason);
+    }
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || ("サーバーのエラー（" + response.status + "）"));
